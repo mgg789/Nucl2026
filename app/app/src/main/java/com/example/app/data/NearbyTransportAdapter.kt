@@ -22,6 +22,7 @@ class NearbyTransportAdapter(
         policy: AccessPolicy,
         deliveryClass: DeliveryClass,
     ): Boolean {
+        nearby.rememberSentContent(content)
         val ttl = when (deliveryClass) {
             DeliveryClass.REALTIME -> 2
             DeliveryClass.INTERACTIVE -> 3

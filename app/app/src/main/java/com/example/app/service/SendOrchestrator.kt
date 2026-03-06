@@ -1,5 +1,6 @@
 package com.example.app.service
 
+import com.example.app.core.file.FileTransferPlanner
 import com.example.app.core.message.OutboundContent
 import com.example.app.core.transport.DeliveryClass
 import com.example.app.core.transport.TransportAdapter
@@ -39,6 +40,7 @@ class SendOrchestrator(
     private val adapters: Map<TransportType, TransportAdapter>,
     private val transportRegistry: TransportRegistry,
 ) {
+    private val maxBulkPerFlush = 8
     private val pending = mutableListOf<OutboundQueuedMessage>()
     private val _pendingMessages = MutableStateFlow<List<OutboundQueuedMessage>>(emptyList())
     val pendingMessages: StateFlow<List<OutboundQueuedMessage>> = _pendingMessages.asStateFlow()
@@ -56,6 +58,55 @@ class SendOrchestrator(
             policy = policy,
             deliveryClass = deliveryClass,
         )
+    }
+
+    @Synchronized
+    fun enqueueFileTransfer(
+        sender: LocalIdentity,
+        fileName: String,
+        mimeType: String,
+        bytes: ByteArray,
+        policy: AccessPolicy,
+    ): List<DispatchOutcome> {
+        val planned = FileTransferPlanner.plan(
+            fileName = fileName,
+            mimeType = mimeType,
+            bytes = bytes,
+        )
+        val outcomes = mutableListOf<DispatchOutcome>()
+        outcomes += enqueueAndTrySend(
+            sender = sender,
+            content = planned.meta,
+            policy = policy,
+            deliveryClass = DeliveryClass.BULK,
+        )
+        planned.chunks.forEach { chunk ->
+            enqueueOnly(
+                sender = sender,
+                content = chunk,
+                policy = policy,
+                deliveryClass = DeliveryClass.BULK,
+            )
+        }
+        outcomes += flushAll()
+        return outcomes
+    }
+
+    @Synchronized
+    private fun enqueueOnly(
+        sender: LocalIdentity,
+        content: OutboundContent,
+        policy: AccessPolicy,
+        deliveryClass: DeliveryClass,
+    ) {
+        val msg = OutboundQueuedMessage(
+            sender = sender,
+            content = content,
+            policy = policy,
+            deliveryClass = deliveryClass,
+        )
+        pending.add(msg)
+        syncPendingFlow()
     }
 
     @Synchronized
@@ -78,9 +129,18 @@ class SendOrchestrator(
 
     @Synchronized
     fun flushAll(): List<DispatchOutcome> {
-        val ids = pending
+        val sorted = pending
             .sortedWith(compareBy({ classPriority(it.deliveryClass) }, { it.createdAtMs }))
-            .map { it.queueId }
+        var bulkLeft = maxBulkPerFlush
+        val ids = buildList {
+            sorted.forEach { msg ->
+                if (msg.deliveryClass == DeliveryClass.BULK) {
+                    if (bulkLeft <= 0) return@forEach
+                    bulkLeft--
+                }
+                add(msg.queueId)
+            }
+        }
         return ids.map { flushOne(it) }
     }
 

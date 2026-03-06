@@ -7,6 +7,7 @@ enum class ContentKind {
     TEXT,
     FILE_META,
     FILE_CHUNK,
+    FILE_REPAIR_REQUEST,
     VOICE_NOTE_META,
     VIDEO_NOTE_META,
     CALL_SIGNAL,
@@ -33,6 +34,11 @@ sealed class OutboundContent(
         val chunkTotal: Int,
         val chunkBase64: String,
     ) : OutboundContent(ContentKind.FILE_CHUNK)
+
+    data class FileRepairRequest(
+        val fileId: String,
+        val missingIndices: List<Int>,
+    ) : OutboundContent(ContentKind.FILE_REPAIR_REQUEST)
 
     data class VoiceNoteMeta(
         val fileId: String,
@@ -71,6 +77,9 @@ object ContentCodec {
                 .put("chunkIndex", content.chunkIndex)
                 .put("chunkTotal", content.chunkTotal)
                 .put("chunkBase64", content.chunkBase64)
+            is OutboundContent.FileRepairRequest -> json
+                .put("fileId", content.fileId)
+                .put("missingIndices", content.missingIndices.joinToString(","))
             is OutboundContent.VoiceNoteMeta -> json
                 .put("fileId", content.fileId)
                 .put("durationMs", content.durationMs)
@@ -109,6 +118,12 @@ object ContentCodec {
                     chunkIndex = json.getInt("chunkIndex"),
                     chunkTotal = json.getInt("chunkTotal"),
                     chunkBase64 = json.getString("chunkBase64"),
+                )
+                ContentKind.FILE_REPAIR_REQUEST -> OutboundContent.FileRepairRequest(
+                    fileId = json.getString("fileId"),
+                    missingIndices = json.optString("missingIndices")
+                        .split(',')
+                        .mapNotNull { it.trim().toIntOrNull() },
                 )
                 ContentKind.VOICE_NOTE_META -> OutboundContent.VoiceNoteMeta(
                     fileId = json.getString("fileId"),

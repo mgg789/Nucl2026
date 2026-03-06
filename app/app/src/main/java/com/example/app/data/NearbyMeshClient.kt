@@ -40,7 +40,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
+import kotlin.random.Random
 
 data class ReceivedMeshMessage(
     val fromEndpointId: String,
@@ -57,6 +61,21 @@ data class MeshStats(
     val forwardedCount: Int = 0,
     val pendingAckCount: Int = 0,
     val ackReceivedCount: Int = 0,
+)
+
+data class DeliveryMetrics(
+    val sentCount: Int = 0,
+    val ackedCount: Int = 0,
+    val lostCount: Int = 0,
+    val avgAckRttMs: Long = 0,
+    val p95AckRttMs: Long = 0,
+    val lossPercent: Int = 0,
+)
+
+data class NetworkTestConfig(
+    val forwardingEnabled: Boolean = true,
+    val inboundDropPercent: Int = 0,
+    val outboundDropPercent: Int = 0,
 )
 
 data class TopologyEdge(
@@ -86,6 +105,7 @@ class NearbyMeshClient(
     private val signer = DeviceKeyStoreSigner()
     private val queueStore = MessageQueueStore(appContext)
     private val identityTrustStore = IdentityTrustStore(appContext)
+    private val incomingFileStore = IncomingFileStore(appContext)
 
     private var localIdentity: LocalIdentity? = null
     private val connected = linkedSetOf<String>()
@@ -97,8 +117,22 @@ class NearbyMeshClient(
     private var droppedDuplicates = 0
     private var forwardedCount = 0
     private var ackReceivedCount = 0
+    private var sentCount = 0
+    private var lostCount = 0
+    private val ackRttsMs = mutableListOf<Long>()
+    private val pendingSentAtMs = ConcurrentHashMap<String, Long>()
     private var dropAcksForDemo = false
+    private var forwardingEnabled = true
+    private var inboundDropPercent = 0
+    private var outboundDropPercent = 0
     private var topologySyncJob: Job? = null
+    private val incomingFiles = ConcurrentHashMap<String, IncomingFileState>()
+    private val sentFileChunks = ConcurrentHashMap<String, MutableMap<Int, OutboundContent.FileChunk>>()
+    private val sentFileMeta = ConcurrentHashMap<String, OutboundContent.FileMeta>()
+    private val repairRequestSentAtMs = ConcurrentHashMap<String, Long>()
+    private val inboundRateWindowMs = 5_000L
+    private val inboundRateLimit = 40
+    private val inboundSenderEvents = ConcurrentHashMap<String, MutableList<Long>>()
 
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
@@ -118,6 +152,27 @@ class NearbyMeshClient(
 
     private val _topology = MutableStateFlow(TopologySnapshot())
     val topology: StateFlow<TopologySnapshot> = _topology.asStateFlow()
+    private val _deliveryMetrics = MutableStateFlow(DeliveryMetrics())
+    val deliveryMetrics: StateFlow<DeliveryMetrics> = _deliveryMetrics.asStateFlow()
+    private val _testConfig = MutableStateFlow(NetworkTestConfig())
+    val testConfig: StateFlow<NetworkTestConfig> = _testConfig.asStateFlow()
+
+    private data class IncomingFileState(
+        val meta: OutboundContent.FileMeta? = null,
+        val chunks: Map<Int, ByteArray> = emptyMap(),
+        val chunkTotal: Int? = null,
+    )
+
+    init {
+        incomingFileStore.loadAll().forEach { persisted ->
+            incomingFiles[persisted.fileId] = IncomingFileState(
+                meta = persisted.meta,
+                chunks = persisted.chunks,
+                chunkTotal = persisted.chunkTotal,
+            )
+        }
+        syncDeliveryMetrics()
+    }
 
     private fun log(line: String) {
         _logs.value = (_logs.value + line).takeLast(140)
@@ -134,6 +189,21 @@ class NearbyMeshClient(
             forwardedCount = forwardedCount,
             pendingAckCount = pendingAcks.size,
             ackReceivedCount = ackReceivedCount,
+        )
+    }
+
+    private fun syncDeliveryMetrics() {
+        val sorted = ackRttsMs.sorted()
+        val p95 = if (sorted.isEmpty()) 0L else sorted[((sorted.size - 1) * 95) / 100]
+        val avg = if (sorted.isEmpty()) 0L else sorted.average().toLong()
+        val lossPct = if (sentCount <= 0) 0 else ((lostCount * 100.0) / sentCount).toInt()
+        _deliveryMetrics.value = DeliveryMetrics(
+            sentCount = sentCount,
+            ackedCount = ackReceivedCount,
+            lostCount = lostCount,
+            avgAckRttMs = avg,
+            p95AckRttMs = p95,
+            lossPercent = lossPct,
         )
     }
 
@@ -214,7 +284,13 @@ class NearbyMeshClient(
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             val bytes = payload.asBytes() ?: return
             runCatching { MeshEnvelope.fromJsonBytes(bytes) }
-                .onSuccess { envelope -> handleEnvelope(endpointId, envelope) }
+                .onSuccess { envelope ->
+                    if (shouldDropInbound(envelope)) {
+                        log("DROP inbound ${envelope.type.name} ${envelope.id.take(8)} test=${inboundDropPercent}%")
+                        return@onSuccess
+                    }
+                    handleEnvelope(endpointId, envelope)
+                }
                 .onFailure { log("RX parse error from $endpointId") }
         }
 
@@ -242,13 +318,25 @@ class NearbyMeshClient(
                 val ackFor = envelope.ackForId ?: return
                 if (pendingAcks.remove(ackFor) != null) {
                     ackReceivedCount++
+                    pendingSentAtMs.remove(ackFor)?.let { startedAt ->
+                        val rtt = (System.currentTimeMillis() - startedAt).coerceAtLeast(0)
+                        ackRttsMs += rtt
+                        if (ackRttsMs.size > 300) {
+                            ackRttsMs.removeAt(0)
+                        }
+                    }
                     queueStore.markAcked(ackFor)
                     syncStats()
+                    syncDeliveryMetrics()
                     log("ACK for ${ackFor.take(8)} from ${envelope.senderUserId}")
                 }
             }
 
             MeshMessageType.CHAT -> {
+                if (isSenderRateLimited(envelope.senderUserId)) {
+                    log("Dropped ${envelope.id.take(8)}: rate limit for ${envelope.senderUserId}")
+                    return
+                }
                 if (!seenMessageIds.add(envelope.id)) {
                     droppedDuplicates++
                     syncStats()
@@ -286,13 +374,18 @@ class NearbyMeshClient(
                     null
                 }
 
+                val content = plainText?.let { ContentCodec.decode(it) }
+                if (content is OutboundContent.FileRepairRequest) {
+                    handleFileRepairRequest(content)
+                }
+                val enrichedSummary = buildIncomingSummary(content)
                 _incomingMessages.value = (_incomingMessages.value + ReceivedMeshMessage(
                     fromEndpointId = fromEndpointId,
                     envelope = envelope,
                     decryptedText = plainText,
                     accessGranted = canRead && plainText != null,
-                    contentKind = plainText?.let { ContentCodec.decode(it)?.kind },
-                    contentSummary = plainText.toSummary(),
+                    contentKind = content?.kind,
+                    contentSummary = enrichedSummary ?: plainText.toSummary(),
                 ))
                     .takeLast(100)
                 val grant = canRead && plainText != null
@@ -339,6 +432,10 @@ class NearbyMeshClient(
     }
 
     private fun forward(original: MeshEnvelope, fromEndpointId: String) {
+        if (!forwardingEnabled) {
+            log("FWD blocked ${original.id.take(8)}: forwarding disabled")
+            return
+        }
         val targets = connected.filter { it != fromEndpointId }
         if (targets.isEmpty()) return
 
@@ -354,6 +451,10 @@ class NearbyMeshClient(
 
     private fun sendToTargets(targets: List<String>, envelope: MeshEnvelope): Int {
         if (targets.isEmpty()) return 0
+        if (shouldDropOutbound(envelope)) {
+            log("DROP outbound ${envelope.type.name} ${envelope.id.take(8)} test=${outboundDropPercent}%")
+            return 0
+        }
         val payload = Payload.fromBytes(envelope.toJsonBytes())
         connectionsClient.sendPayload(targets, payload)
             .addOnSuccessListener {
@@ -372,8 +473,11 @@ class NearbyMeshClient(
                 val pending = pendingAcks[msgId] ?: break
                 if (pending.retries >= 2) {
                     pendingAcks.remove(msgId)
+                    pendingSentAtMs.remove(msgId)
+                    lostCount++
                     queueStore.markFailed(msgId)
                     syncStats()
+                    syncDeliveryMetrics()
                     log("Retry timeout ${msgId.take(8)}")
                     break
                 }
@@ -383,6 +487,7 @@ class NearbyMeshClient(
                 queueStore.incrementRetries(msgId)
                 sendToTargets(targets, pending.envelope)
                 syncStats()
+                syncDeliveryMetrics()
                 log("Retry #${pending.retries} for ${msgId.take(8)}")
             }
         }
@@ -500,9 +605,25 @@ class NearbyMeshClient(
         queueStore.markSent(signed.id)
         seenMessageIds.add(signed.id)
         pendingAcks[signed.id] = PendingAck(envelope = signed)
+        sentCount++
+        pendingSentAtMs[signed.id] = System.currentTimeMillis()
         syncStats()
+        syncDeliveryMetrics()
         scheduleRetry(signed.id)
         return sent
+    }
+
+    fun rememberSentContent(content: OutboundContent) {
+        when (content) {
+            is OutboundContent.FileMeta -> {
+                sentFileMeta[content.fileId] = content
+            }
+            is OutboundContent.FileChunk -> {
+                val bucket = sentFileChunks.getOrPut(content.fileId) { mutableMapOf() }
+                bucket[content.chunkIndex] = content
+            }
+            else -> Unit
+        }
     }
 
     fun buildChatEnvelope(
@@ -536,6 +657,29 @@ class NearbyMeshClient(
         log("Demo ACK drop: ${if (enabled) "ON" else "OFF"}")
     }
 
+    fun setForwardingEnabled(enabled: Boolean) {
+        forwardingEnabled = enabled
+        syncTestConfig()
+        log("Forwarding: ${if (enabled) "ON" else "OFF"}")
+    }
+
+    fun setPacketLossSimulation(inboundPercent: Int, outboundPercent: Int) {
+        inboundDropPercent = inboundPercent.coerceIn(0, 90)
+        outboundDropPercent = outboundPercent.coerceIn(0, 90)
+        syncTestConfig()
+        log("Loss simulation in=${inboundDropPercent}% out=${outboundDropPercent}%")
+    }
+
+    fun resetDeliveryMetrics() {
+        sentCount = 0
+        ackReceivedCount = 0
+        lostCount = 0
+        ackRttsMs.clear()
+        syncStats()
+        syncDeliveryMetrics()
+        log("Delivery metrics reset")
+    }
+
     fun transportHealth(): TransportHealth {
         val peers = connected.size
         val available = _isRunning.value && peers > 0
@@ -567,6 +711,153 @@ class NearbyMeshClient(
             stabilityScore = stability,
         )
     }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    private fun buildIncomingSummary(content: OutboundContent?): String? {
+        return when (content) {
+            is OutboundContent.FileMeta -> {
+                val old = incomingFiles[content.fileId]
+                incomingFiles[content.fileId] = (old ?: IncomingFileState()).copy(meta = content)
+                persistIncomingFiles()
+                "FILE ${content.fileName}: метаданные получены"
+            }
+            is OutboundContent.FileChunk -> {
+                val bytes = runCatching { Base64.decode(content.chunkBase64) }.getOrNull()
+                    ?: return "FILE_CHUNK ${content.fileId}: decode error"
+                val prev = incomingFiles[content.fileId] ?: IncomingFileState()
+                if (content.chunkIndex !in prev.chunks) {
+                    val updatedChunks = prev.chunks.toMutableMap().apply { put(content.chunkIndex, bytes) }
+                    val updated = prev.copy(chunks = updatedChunks, chunkTotal = content.chunkTotal)
+                    incomingFiles[content.fileId] = updated
+                    persistIncomingFiles()
+                }
+                val state = incomingFiles[content.fileId] ?: return null
+                val got = state.chunks.size
+                val total = state.chunkTotal ?: content.chunkTotal
+                if (got >= total && total > 0) {
+                    val assembled = ByteArray(state.chunks.values.sumOf { it.size })
+                    var offset = 0
+                    state.chunks.toSortedMap().values.forEach { chunk ->
+                        chunk.copyInto(assembled, destinationOffset = offset)
+                        offset += chunk.size
+                    }
+                    val hash = sha256Hex(assembled)
+                    val fileName = state.meta?.fileName ?: "unknown.bin"
+                    val valid = state.meta?.sha256?.equals(hash, ignoreCase = true) ?: false
+                    incomingFiles.remove(content.fileId)
+                    persistIncomingFiles()
+                    if (valid) {
+                        "FILE $fileName: получен полностью, checksum ok (${assembled.size} bytes)"
+                    } else {
+                        "FILE $fileName: ошибка целостности (hash mismatch)"
+                    }
+                } else {
+                    val fileName = state.meta?.fileName ?: "file-${content.fileId.take(6)}"
+                    maybeRequestMissingChunks(content.fileId, total, got)
+                    "FILE $fileName: $got/$total chunks"
+                }
+            }
+            else -> null
+        }
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { b -> "%02x".format(b) }
+    }
+
+    private fun persistIncomingFiles() {
+        val snapshot = incomingFiles.map { (fileId, state) ->
+            PersistedIncomingFile(
+                fileId = fileId,
+                meta = state.meta,
+                chunkTotal = state.chunkTotal,
+                chunks = state.chunks,
+            )
+        }
+        incomingFileStore.saveAll(snapshot)
+    }
+
+    private fun isSenderRateLimited(senderUserId: String): Boolean {
+        val now = System.currentTimeMillis()
+        val events = inboundSenderEvents.getOrPut(senderUserId) { mutableListOf() }
+        synchronized(events) {
+            events.removeAll { ts -> now - ts > inboundRateWindowMs }
+            if (events.size >= inboundRateLimit) return true
+            events += now
+            return false
+        }
+    }
+
+    private fun maybeRequestMissingChunks(fileId: String, total: Int, got: Int) {
+        if (got <= 0 || got >= total) return
+        val now = System.currentTimeMillis()
+        val last = repairRequestSentAtMs[fileId] ?: 0L
+        if (now - last < 4000L) return
+        val state = incomingFiles[fileId] ?: return
+        val missing = (0 until total).filter { it !in state.chunks.keys }
+        if (missing.isEmpty()) return
+        val identity = localIdentity ?: return
+        val env = buildChatEnvelope(
+            sender = identity,
+            messageText = ContentCodec.encode(
+                OutboundContent.FileRepairRequest(
+                    fileId = fileId,
+                    missingIndices = missing.take(20),
+                ),
+            ),
+            policy = AccessPolicy(),
+            ttl = 2,
+        ) ?: return
+        val targets = connected.toList()
+        if (targets.isEmpty()) return
+        repairRequestSentAtMs[fileId] = now
+        sendToTargets(targets, env)
+        log("FILE repair request ${fileId.take(6)} missing=${missing.take(20)}")
+    }
+
+    private fun handleFileRepairRequest(req: OutboundContent.FileRepairRequest) {
+        val identity = localIdentity ?: return
+        val chunks = sentFileChunks[req.fileId] ?: return
+        var resent = 0
+        req.missingIndices.forEach { idx ->
+            val chunk = chunks[idx] ?: return@forEach
+            val env = buildChatEnvelope(
+                sender = identity,
+                messageText = ContentCodec.encode(chunk),
+                policy = AccessPolicy(),
+                ttl = 3,
+            ) ?: return@forEach
+            val targets = connected.toList()
+            if (targets.isNotEmpty()) {
+                sendToTargets(targets, env)
+                resent++
+            }
+        }
+        if (resent > 0) {
+            log("FILE repaired ${req.fileId.take(6)} resent=$resent")
+        }
+    }
+
+    private fun syncTestConfig() {
+        _testConfig.value = NetworkTestConfig(
+            forwardingEnabled = forwardingEnabled,
+            inboundDropPercent = inboundDropPercent,
+            outboundDropPercent = outboundDropPercent,
+        )
+    }
+
+    private fun shouldDropInbound(envelope: MeshEnvelope): Boolean {
+        if (inboundDropPercent <= 0) return false
+        if (envelope.type == MeshMessageType.TOPOLOGY) return false
+        return Random.nextInt(100) < inboundDropPercent
+    }
+
+    private fun shouldDropOutbound(envelope: MeshEnvelope): Boolean {
+        if (outboundDropPercent <= 0) return false
+        if (envelope.type == MeshMessageType.TOPOLOGY) return false
+        return Random.nextInt(100) < outboundDropPercent
+    }
 }
 
 private fun String?.toSummary(): String {
@@ -576,6 +867,7 @@ private fun String?.toSummary(): String {
         is OutboundContent.Text -> decoded.text.take(80)
         is OutboundContent.FileMeta -> "FILE ${decoded.fileName} (${decoded.totalBytes} bytes)"
         is OutboundContent.FileChunk -> "FILE_CHUNK ${decoded.fileId} ${decoded.chunkIndex + 1}/${decoded.chunkTotal}"
+        is OutboundContent.FileRepairRequest -> "FILE_REPAIR ${decoded.fileId.take(8)} miss=${decoded.missingIndices.size}"
         is OutboundContent.VoiceNoteMeta -> "VOICE ${decoded.durationMs}ms ${decoded.codec}"
         is OutboundContent.VideoNoteMeta -> "VIDEO_NOTE ${decoded.durationMs}ms ${decoded.width}x${decoded.height}"
         is OutboundContent.CallSignal -> "CALL_SIGNAL ${decoded.phase} ${decoded.callId.take(8)}"
