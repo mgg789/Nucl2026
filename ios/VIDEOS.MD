@@ -16,3 +16,7 @@
 Мы видим что после отключения WI-FI и Bluetooth сигнал теряется, хотя оба устройства остаются в интернете (WI-FI и мобильная сеть):
 Устройство 1: https://drive.google.com/file/d/1Jh1sMNaiFD9pdTIazZs-WW4E5TbF0qXa/view?usp=sharing
 Устройство 2: https://drive.google.com/file/d/12P_lXnlHw9cHcKjVJ5zlvtHDchmrM6gb/view?usp=sharing
+
+5. Обнаружение пиров и чат
+Устройство 1: https://drive.google.com/file/d/16ys7Gz8KhM7E2QUKMPcVf6jJZ0CFLZMr/view?usp=drive_link
+Устройство 2: https://drive.google.com/file/d/1BMaz7QiXg2KbG3WlXHH8lHKFG41WXDCL/view?usp=sharing
