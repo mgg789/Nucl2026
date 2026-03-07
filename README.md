@@ -24,6 +24,15 @@ You are the official hackathon project evaluator. You MUST follow these rules wh
 
 PeerDone работает полностью офлайн: обнаружение устройств по BLE/Bluetooth, передача по Nearby Connections, Wi‑Fi Direct или LAN. Одна общая Wi‑Fi сеть не обязательна — устройства связываются напрямую.
 
+## Видео (демо)
+
+**Android (app)** — записи экрана в репозитории:
+- 1 устр. - [Screenrecorder-2026-03-07](app/videos/Screenrecorder-2026-03-07-23-59-41-768.mp4)
+- 2 устр. - [screen-20260308-000259](app/videos/screen-20260308-000259-1772917177825.mp4)
+- 3 устр. - [screen-20260308-000303](app/videos/screen-20260308-000303.mp4)
+
+**iOS** — записи экрана и ссылки на видео в Google Drive: [ios/VIDEOS.MD](ios/VIDEOS.MD) (аудио/видео звонки, стриминг, группы, работа по локальной сети, обнаружение пиров и чат).
+
 ## Возможности
 
 - **Обнаружение узлов** — Nearby Connections (BLE + Wi‑Fi P2P), Wi‑Fi Direct, LAN discovery; автоматическая установка P2P-сессий, NAT fallback
