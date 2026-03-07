@@ -91,6 +91,10 @@ final class LanMeshService: NSObject, ObservableObject {
     private var resolvingServices: [String: NetService] = [:]
     private var bonjourPeersByUserId: [String: (nickname: String, host: String, port: UInt16, device: String)] = [:]
     private var serviceNameToUserId: [String: String] = [:]
+    private var knownNodes: Set<String> = []
+    private var knownEdges: Set<String> = []
+    private var relayPeerByIndirectUserId: [String: String] = [:]
+    private var topologyTick: Int = 0
 
     func start(identity: LocalIdentity, signingIdentity: SignedIdentity) {
         queue.async {
@@ -132,18 +136,28 @@ final class LanMeshService: NSObject, ObservableObject {
     func sendContent(_ content: OutboundContent, policy: AccessPolicy = AccessPolicy(), to targetUserId: String? = nil) {
         queue.async {
             guard let identity = self.identity,
-                  let signingIdentity = self.signingIdentity,
-                  let (keyId, keyBytes) = PolicyKeyService.buildSendKey(sender: identity, policy: policy),
-                  var envelope = MeshEnvelope.createChat(
-                    sender: identity,
-                    senderPublicKeyBase64: signingIdentity.publicKeyBase64,
-                    keyId: keyId,
-                    keyBytes: keyBytes,
-                    messageText: ContentCodec.encode(content),
-                    policy: policy,
-                    ttl: 2
-                  )
+                  let signingIdentity = self.signingIdentity
             else {
+                return
+            }
+            let normTarget = targetUserId?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let (keyId, keyBytes): (String, Data)
+            if let target = normTarget {
+                (keyId, keyBytes) = PolicyKeyService.buildSendKeyForRecipient(recipientUserId: target)
+            } else {
+                guard let built = PolicyKeyService.buildSendKey(sender: identity, policy: policy) else { return }
+                (keyId, keyBytes) = built
+            }
+            guard var envelope = MeshEnvelope.createChat(
+                sender: identity,
+                senderPublicKeyBase64: signingIdentity.publicKeyBase64,
+                keyId: keyId,
+                keyBytes: keyBytes,
+                messageText: ContentCodec.encode(content),
+                policy: policy,
+                ttl: 2,
+                recipientUserId: normTarget
+            ) else {
                 return
             }
 
@@ -189,12 +203,13 @@ final class LanMeshService: NSObject, ObservableObject {
 
         let targets: [MeshPeer]
         if let user = targetUserId {
-            targets = peersByUserId[user].map { [$0] } ?? []
+            let resolved = peersByUserId[user] != nil ? user : relayPeerByIndirectUserId[user]
+            targets = resolved.flatMap { peersByUserId[$0].map { [$0] } ?? [] } ?? []
         } else {
             targets = Array(peersByUserId.values)
         }
 
-        for peer in targets {
+        for peer in targets where !peer.host.isEmpty && peer.port > 0 {
             let host = peer.host
             let port = peer.port
             tcpWriteQueue.async { [weak self] in
@@ -299,9 +314,45 @@ final class LanMeshService: NSObject, ObservableObject {
             self?.sendHello()
             self?.retryPendingAcks()
             self?.cleanupPeers()
+            self?.updateLocalTopology()
+            self?.topologyTick += 1
+            if (self?.topologyTick ?? 0) % 2 == 0 {
+                self?.sendTopologyUpdate()
+            }
         }
         timer.resume()
         self.timer = timer
+    }
+
+    private func updateLocalTopology() {
+        guard let me = identity?.userId.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        knownNodes.insert(me)
+        for (userId, _) in peersByUserId {
+            knownNodes.insert(userId)
+            knownEdges.insert("\(me)|\(userId)")
+            knownEdges.insert("\(userId)|\(me)")
+        }
+    }
+
+    private func sendTopologyUpdate() {
+        guard let identity = identity,
+              let signingIdentity = signingIdentity,
+              !peersByUserId.isEmpty
+        else { return }
+        let me = identity.userId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let directPeers = Array(peersByUserId.keys)
+        let payload: [String: Any] = [
+            "sourceNode": me,
+            "directPeers": directPeers,
+            "timestampMs": Self.nowMs()
+        ]
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
+              let topologyJson = String(data: jsonData, encoding: .utf8),
+              var envelope = MeshEnvelope.createTopology(sender: identity, senderPublicKeyBase64: signingIdentity.publicKeyBase64, topologyJson: topologyJson, ttl: 2),
+              let signature = signingIdentity.sign(envelope.signingString())
+        else { return }
+        envelope.signatureBase64 = signature
+        sendEnvelope(envelope, to: nil)
     }
 
     private func sendHello() {
@@ -533,7 +584,21 @@ final class LanMeshService: NSObject, ObservableObject {
         }
     }
 
+    private func refreshPeerLastSeen(_ userId: String) {
+        let now = Self.nowMs()
+        guard let peer = peersByUserId[userId] else { return }
+        peersByUserId[userId] = MeshPeer(
+            userId: peer.userId,
+            nickname: peer.nickname,
+            host: peer.host,
+            port: peer.port,
+            device: peer.device,
+            lastSeenMs: now
+        )
+    }
+
     private func handleEnvelope(_ envelope: MeshEnvelope) {
+        refreshPeerLastSeen(envelope.senderUserId)
         guard MeshSignature.verify(envelope: envelope) else {
             log("drop \(envelope.id.prefix(8)) invalid signature")
             return
@@ -557,6 +622,24 @@ final class LanMeshService: NSObject, ObservableObject {
         case .topology:
             if seenMessageIds.contains(envelope.id) { return }
             seenMessageIds.insert(envelope.id)
+            if let payload = MeshCrypto.decryptControl(ivBase64: envelope.ivBase64, cipherTextBase64: envelope.cipherTextBase64),
+               let data = payload.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let src = json["sourceNode"] as? String {
+                knownNodes.insert(src)
+                let me = identity?.userId ?? ""
+                if let arr = json["directPeers"] as? [String] {
+                    for peer in arr {
+                        knownNodes.insert(peer)
+                        knownEdges.insert("\(src)|\(peer)")
+                        knownEdges.insert("\(peer)|\(src)")
+                        if peersByUserId[src] != nil, peer != me.trimmingCharacters(in: .whitespacesAndNewlines) {
+                            relayPeerByIndirectUserId[peer] = src
+                        }
+                    }
+                }
+                publish()
+            }
             if envelope.ttl > 0 {
                 let forwarded = envelope.forwarding(ttl: envelope.ttl - 1, hopCount: envelope.hopCount + 1)
                 sendEnvelope(forwarded, to: nil)
@@ -564,6 +647,20 @@ final class LanMeshService: NSObject, ObservableObject {
             return
 
         case .chat:
+            if let recipient = envelope.recipientUserId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !recipient.isEmpty,
+               recipient != identity?.userId.trimmingCharacters(in: .whitespacesAndNewlines) {
+                seenMessageIds.insert(envelope.id)
+                if envelope.ttl > 0 {
+                    let forwarded = envelope.forwarding(ttl: envelope.ttl - 1, hopCount: envelope.hopCount + 1)
+                    if peersByUserId[recipient] != nil {
+                        sendEnvelope(forwarded, to: recipient)
+                    } else {
+                        sendEnvelope(forwarded, to: nil)
+                    }
+                }
+                return
+            }
             break
         }
 
@@ -576,7 +673,10 @@ final class LanMeshService: NSObject, ObservableObject {
         seenMessageIds.insert(envelope.id)
 
         guard let identity = identity else { return }
-        let canRead = PolicyEngine.matches(
+        let myId = identity.userId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let recipientId = envelope.recipientUserId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let iAmRecipient = recipientId.map { !$0.isEmpty && $0 == myId } ?? false
+        let canRead: Bool = iAmRecipient || PolicyEngine.matches(
             user: UserDirectoryEntry(userId: identity.userId, orgId: identity.orgId, level: identity.level, active: true),
             policy: envelope.policy
         )
@@ -607,7 +707,12 @@ final class LanMeshService: NSObject, ObservableObject {
 
         if envelope.ttl > 0 {
             let forwarded = envelope.forwarding(ttl: envelope.ttl - 1, hopCount: envelope.hopCount + 1)
-            sendEnvelope(forwarded, to: nil)
+            let recipient = envelope.recipientUserId?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let r = recipient, !r.isEmpty, peersByUserId[r] != nil {
+                sendEnvelope(forwarded, to: r)
+            } else {
+                sendEnvelope(forwarded, to: nil)
+            }
         }
 
         publish()
@@ -822,8 +927,13 @@ final class LanMeshService: NSObject, ObservableObject {
     }
 
     private func publish() {
+        let me = (identity?.userId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let direct = Array(peersByUserId.values)
+        let indirect = knownNodes.subtracting([me]).subtracting(peersByUserId.keys).map { userId in
+            MeshPeer(userId: userId, nickname: "\(userId) (через сеть)", host: "", port: 0, device: "", lastSeenMs: Self.nowMs())
+        }
         DispatchQueue.main.async {
-            self.peers = self.peersByUserId.values.sorted(by: { $0.userId < $1.userId })
+            self.peers = (direct + indirect).sorted(by: { $0.userId < $1.userId })
             self.isRunning = self.udpSocket >= 0 && self.tcpServerSocket >= 0
         }
     }
@@ -886,6 +996,9 @@ final class LanMeshService: NSObject, ObservableObject {
         completedFiles.removeAll()
         bonjourPeersByUserId.removeAll()
         serviceNameToUserId.removeAll()
+        knownNodes.removeAll()
+        knownEdges.removeAll()
+        relayPeerByIndirectUserId.removeAll()
 
         publishFileTransferDebug()
         publish()

@@ -16,6 +16,7 @@ import com.peerdone.app.ui.screens.ChatListScreen
 import com.peerdone.app.ui.screens.ChatScreen
 import com.peerdone.app.ui.screens.MainScreen
 import com.peerdone.app.ui.screens.DataScreen
+import com.peerdone.app.ui.screens.LogsScreen
 import com.peerdone.app.ui.screens.NetworkScreen
 import com.peerdone.app.ui.screens.SettingsScreen
 import com.peerdone.app.ui.onboarding.OnboardingScreen
@@ -120,8 +121,13 @@ fun PeerDoneNavGraph(
             SettingsScreen(
                 onProfileClick = { navController.navigate(Screen.Profile.route) },
                 onNetworkClick = { navController.navigate(Screen.Network.route) },
-                onDataClick = { navController.navigate(Screen.Data.route) }
+                onDataClick = { navController.navigate(Screen.Data.route) },
+                onLogsClick = { navController.navigate(Screen.Logs.route) }
             )
+        }
+
+        composable(Screen.Logs.route) {
+            LogsScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Screen.Data.route) {

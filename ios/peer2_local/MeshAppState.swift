@@ -2,6 +2,8 @@ import Foundation
 import Combine
 import CryptoKit
 import UserNotifications
+import AVFoundation
+import WebRTC
 
 enum AppTab: Int, CaseIterable {
     case messenger
@@ -87,6 +89,10 @@ final class MeshAppState: ObservableObject {
     @Published var selectedPeerId: String?
     @Published var peers: [MeshPeer] = []
     @Published var unreadByPeer: [String: Int] = [:]
+    @Published var rttMs: Double? = nil
+    @Published var p95Ms: Double? = nil
+    @Published var transferredBytes: Int64 = 0
+    @Published var rttSamplesCount: Int = 0
     @Published var outboundFileProgressByPeer: [String: Double] = [:]
     @Published var outboundFileDebugByPeer: [String: FileTransferDebugMetrics] = [:]
     @Published var logs: [String] = []
@@ -98,10 +104,17 @@ final class MeshAppState: ObservableObject {
     @Published var remoteStreamFiles: [StreamedFileEntry] = []
     @Published var activeCall: ActiveCallState?
     @Published var incomingCall: ActiveCallState?
+    @Published var isCallMicMuted: Bool = false
+    @Published var isCallSpeakerEnabled: Bool = true
+    @Published var isCallVideoEnabled: Bool = false
+    @Published var localCallVideoTrack: RTCVideoTrack?
+    @Published var remoteCallVideoTrack: RTCVideoTrack?
     @Published var connectionStatusLabel: String = "LAN"
 
     private let identityStore = IdentityStore()
     private let service = LanMeshService()
+    private let callEngine = WebRTCCallEngine()
+    private let ringbackPlayer = CallRingbackPlayer()
     private var signingIdentity: SignedIdentity
 
     private var cancellables = Set<AnyCancellable>()
@@ -123,6 +136,9 @@ final class MeshAppState: ObservableObject {
     private var knownPeerNames: [String: String] = [:]
     private var localStreamPathsById: [String: String] = [:]
     private var fileDebugCompletionWorkItems: [String: DispatchWorkItem] = [:]
+    private var pendingIncomingOfferByCallId: [String: String] = [:]
+    private var pendingIncomingIceByCallId: [String: [String]] = [:]
+    private var callAutoHangupWorkItem: DispatchWorkItem?
 
     init() {
         let identity = identityStore.loadOrCreateIdentity()
@@ -130,11 +146,15 @@ final class MeshAppState: ObservableObject {
         self.signingIdentity = identityStore.loadOrCreateSigningIdentity(userId: identity.userId)
         requestNotificationAuthorization()
         loadPersisted()
+        bindCallEngine()
         bind()
         service.start(identity: identity, signingIdentity: signingIdentity)
     }
 
     deinit {
+        ringbackPlayer.stop()
+        cancelCallAutoHangup()
+        callEngine.close()
         service.stop()
     }
 
@@ -450,7 +470,12 @@ final class MeshAppState: ObservableObject {
         }
         if let peer = peers.first(where: { $0.userId == peerId }) {
             let nickname = peer.nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-            return nickname.isEmpty ? peerId : nickname
+            if !nickname.isEmpty && nickname != peerId {
+                return nickname
+            }
+            let device = peer.device.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !device.isEmpty { return device }
+            return peerId
         }
         if let known = knownPeerNames[peerId], !known.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return known
@@ -489,11 +514,14 @@ final class MeshAppState: ObservableObject {
             outgoing: true
         )
         activeCall = state
+        resetCallControls()
+        callEngine.setMicrophoneMuted(isCallMicMuted)
+        callEngine.setSpeakerEnabled(isCallSpeakerEnabled)
+        isCallVideoEnabled = video
 
-        service.sendContent(
-            .callSignal(callId: callId, phase: "offer", sdpOrIce: video ? "video" : "audio"),
-            to: peerId
-        )
+        callEngine.startOutgoing(callId: callId, peerId: peerId, isVideo: video)
+        ringbackPlayer.start()
+        scheduleCallAutoHangup(callId: callId, peerId: peerId)
 
         callHistory.insert(
             CallHistoryEntry(
@@ -510,6 +538,8 @@ final class MeshAppState: ObservableObject {
 
     func acceptIncomingCall() {
         guard let incoming = incomingCall else { return }
+        ringbackPlayer.stop()
+        cancelCallAutoHangup()
         activeCall = ActiveCallState(
             callId: incoming.callId,
             peerId: incoming.peerId,
@@ -517,20 +547,83 @@ final class MeshAppState: ObservableObject {
             startedAtMs: nowMs(),
             outgoing: false
         )
+        resetCallControls()
+        callEngine.setMicrophoneMuted(isCallMicMuted)
+        callEngine.setSpeakerEnabled(isCallSpeakerEnabled)
+        isCallVideoEnabled = incoming.isVideo
         incomingCall = nil
-        service.sendContent(.callSignal(callId: incoming.callId, phase: "answer", sdpOrIce: "ok"), to: incoming.peerId)
+        if let remoteOffer = pendingIncomingOfferByCallId.removeValue(forKey: incoming.callId),
+           remoteOffer.hasPrefix("offer\n") {
+            callEngine.acceptIncoming(
+                callId: incoming.callId,
+                peerId: incoming.peerId,
+                isVideo: incoming.isVideo,
+                remoteOfferPayload: remoteOffer
+            )
+            let bufferedIce = pendingIncomingIceByCallId.removeValue(forKey: incoming.callId) ?? []
+            for icePayload in bufferedIce {
+                callEngine.handleRemoteIce(callId: incoming.callId, payload: icePayload)
+            }
+        } else {
+            service.sendContent(.callSignal(callId: incoming.callId, phase: "answer", sdpOrIce: "ok"), to: incoming.peerId)
+        }
     }
 
     func declineIncomingCall() {
         guard let incoming = incomingCall else { return }
+        pendingIncomingOfferByCallId.removeValue(forKey: incoming.callId)
+        pendingIncomingIceByCallId.removeValue(forKey: incoming.callId)
         service.sendContent(.callSignal(callId: incoming.callId, phase: "end", sdpOrIce: "decline"), to: incoming.peerId)
         incomingCall = nil
     }
 
     func endActiveCall() {
         guard let active = activeCall else { return }
+        ringbackPlayer.stop()
+        cancelCallAutoHangup()
+        callEngine.close(callId: active.callId)
         service.sendContent(.callSignal(callId: active.callId, phase: "end", sdpOrIce: "bye"), to: active.peerId)
         activeCall = nil
+        localCallVideoTrack = nil
+        remoteCallVideoTrack = nil
+        resetCallControls()
+    }
+
+    func toggleCallMicrophone() {
+        isCallMicMuted.toggle()
+        callEngine.setMicrophoneMuted(isCallMicMuted)
+    }
+
+    func toggleCallSpeaker() {
+        isCallSpeakerEnabled.toggle()
+        callEngine.setSpeakerEnabled(isCallSpeakerEnabled)
+    }
+
+    func toggleCallVideo() {
+        guard let active = activeCall else { return }
+        let target = !isCallVideoEnabled
+
+        if target {
+            switch AVCaptureDevice.authorizationStatus(for: .video) {
+            case .authorized:
+                applyVideoState(target, for: active)
+            case .notDetermined:
+                AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                    guard let self else { return }
+                    guard granted else { return }
+                    DispatchQueue.main.async {
+                        guard let latest = self.activeCall, latest.callId == active.callId else { return }
+                        self.applyVideoState(true, for: latest)
+                    }
+                }
+            case .denied, .restricted:
+                break
+            @unknown default:
+                break
+            }
+        } else {
+            applyVideoState(false, for: active)
+        }
     }
 
     func clearCallHistory() {
@@ -550,11 +643,59 @@ final class MeshAppState: ObservableObject {
         remoteStreamFiles.removeAll()
         pendingVoiceByFileId.removeAll()
         receivedFileById.removeAll()
+        pendingIncomingOfferByCallId.removeAll()
+        pendingIncomingIceByCallId.removeAll()
         knownPeerNames.removeAll()
         localStreamPathsById.removeAll()
         fileDebugCompletionWorkItems.values.forEach { $0.cancel() }
         fileDebugCompletionWorkItems.removeAll()
+        ringbackPlayer.stop()
+        cancelCallAutoHangup()
+        localCallVideoTrack = nil
+        remoteCallVideoTrack = nil
+        resetCallControls()
+        callEngine.close()
         persist()
+    }
+
+    private func bindCallEngine() {
+        callEngine.onSignal = { [weak self] peerId, callId, phase, sdpOrIce in
+            guard let self else { return }
+            self.service.sendContent(.callSignal(callId: callId, phase: phase, sdpOrIce: sdpOrIce), to: peerId)
+        }
+
+        callEngine.onVideoTracksChanged = { [weak self] local, remote in
+            DispatchQueue.main.async {
+                self?.localCallVideoTrack = local
+                self?.remoteCallVideoTrack = remote
+            }
+        }
+
+        callEngine.onConnected = { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.ringbackPlayer.stop()
+                self?.cancelCallAutoHangup()
+            }
+        }
+
+        callEngine.onDisconnected = { [weak self] callId in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.ringbackPlayer.stop()
+                self.cancelCallAutoHangup()
+                if self.activeCall?.callId == callId {
+                    self.activeCall = nil
+                }
+                if self.incomingCall?.callId == callId {
+                    self.incomingCall = nil
+                }
+                self.pendingIncomingOfferByCallId.removeValue(forKey: callId)
+                self.pendingIncomingIceByCallId.removeValue(forKey: callId)
+                self.localCallVideoTrack = nil
+                self.remoteCallVideoTrack = nil
+                self.resetCallControls()
+            }
+        }
     }
 
     private func bind() {
@@ -761,9 +902,30 @@ final class MeshAppState: ObservableObject {
             let callId = content.payload["callId"] as? String ?? UUID().uuidString
             let phase = content.payload["phase"] as? String ?? ""
             let media = content.payload["sdpOrIce"] as? String ?? "audio"
-            let isVideo = media.contains("video")
+            let isVideo = media.contains("video") || media.contains("m=video")
 
             if phase == "offer" {
+                if let active = activeCall, active.peerId == sender, active.callId == callId {
+                    if active.isVideo != isVideo {
+                        activeCall = ActiveCallState(
+                            callId: active.callId,
+                            peerId: active.peerId,
+                            isVideo: isVideo,
+                            startedAtMs: active.startedAtMs,
+                            outgoing: active.outgoing
+                        )
+                    }
+                    if isVideo {
+                        isCallVideoEnabled = true
+                    }
+                    if media.hasPrefix("offer\n") {
+                        callEngine.handleRemoteOffer(callId: callId, payload: media)
+                    }
+                    return
+                }
+                if media.hasPrefix("offer\n") {
+                    pendingIncomingOfferByCallId[callId] = media
+                }
                 incomingCall = ActiveCallState(
                     callId: callId,
                     peerId: sender,
@@ -776,16 +938,42 @@ final class MeshAppState: ObservableObject {
                     at: 0
                 )
             } else if phase == "answer" {
-                if let active = activeCall, active.peerId == sender {
-                    activeCall = active
+                if let active = activeCall, active.peerId == sender, active.callId == callId {
+                    ringbackPlayer.stop()
+                    cancelCallAutoHangup()
+                    if media.hasPrefix("answer\n") {
+                        callEngine.handleRemoteAnswer(callId: callId, payload: media)
+                    }
+                    let updated = ActiveCallState(
+                        callId: active.callId,
+                        peerId: active.peerId,
+                        isVideo: isCallVideoEnabled || isVideo,
+                        startedAtMs: active.startedAtMs,
+                        outgoing: active.outgoing
+                    )
+                    activeCall = updated
+                }
+            } else if phase == "ice" {
+                if activeCall?.callId == callId {
+                    callEngine.handleRemoteIce(callId: callId, payload: media)
+                } else if incomingCall?.callId == callId {
+                    pendingIncomingIceByCallId[callId, default: []].append(media)
                 }
             } else if phase == "end" {
+                pendingIncomingOfferByCallId.removeValue(forKey: callId)
+                pendingIncomingIceByCallId.removeValue(forKey: callId)
+                ringbackPlayer.stop()
+                cancelCallAutoHangup()
+                callEngine.close(callId: callId)
                 if activeCall?.peerId == sender {
                     activeCall = nil
                 }
                 if incomingCall?.peerId == sender {
                     incomingCall = nil
                 }
+                localCallVideoTrack = nil
+                remoteCallVideoTrack = nil
+                resetCallControls()
             }
 
         case .voiceNoteMeta:
@@ -1066,6 +1254,47 @@ final class MeshAppState: ObservableObject {
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
+    }
+
+    private func resetCallControls() {
+        isCallMicMuted = false
+        isCallSpeakerEnabled = true
+        isCallVideoEnabled = false
+    }
+
+    private func applyVideoState(_ enabled: Bool, for active: ActiveCallState) {
+        isCallVideoEnabled = enabled
+        activeCall = ActiveCallState(
+            callId: active.callId,
+            peerId: active.peerId,
+            isVideo: enabled,
+            startedAtMs: active.startedAtMs,
+            outgoing: active.outgoing
+        )
+        callEngine.setVideoEnabled(callId: active.callId, enabled: enabled)
+    }
+
+    private func scheduleCallAutoHangup(callId: String, peerId: String) {
+        cancelCallAutoHangup()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard let active = self.activeCall, active.callId == callId, active.outgoing else { return }
+            self.ringbackPlayer.stop()
+            self.callEngine.close(callId: callId)
+            self.service.sendContent(.callSignal(callId: callId, phase: "end", sdpOrIce: "timeout_45s"), to: peerId)
+            self.activeCall = nil
+            self.localCallVideoTrack = nil
+            self.remoteCallVideoTrack = nil
+            self.resetCallControls()
+            self.callAutoHangupWorkItem = nil
+        }
+        callAutoHangupWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 45, execute: work)
+    }
+
+    private func cancelCallAutoHangup() {
+        callAutoHangupWorkItem?.cancel()
+        callAutoHangupWorkItem = nil
     }
 
     private func isLikelyVoiceFile(name: String?, path: String) -> Bool {
