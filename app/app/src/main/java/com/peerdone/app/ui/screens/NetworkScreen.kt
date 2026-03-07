@@ -494,7 +494,8 @@ fun NetworkScreen(
                 }
                 Spacer(modifier = Modifier.height(8.dp))
             }
-            topology.edges.take(50).forEach { edge ->
+            if (isRunning) {
+                topology.edges.take(20).forEach { edge ->
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -519,6 +520,7 @@ fun NetworkScreen(
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
+            }
             }
         }
 
