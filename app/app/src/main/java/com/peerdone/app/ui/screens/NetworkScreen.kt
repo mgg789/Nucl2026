@@ -1,8 +1,7 @@
 package com.peerdone.app.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,13 +16,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -70,8 +75,11 @@ import com.peerdone.app.ui.theme.PeerDonePrimary
 import com.peerdone.app.ui.theme.PeerDoneStopButton
 import com.peerdone.app.ui.theme.PeerDoneStopButtonText
 import com.peerdone.app.ui.theme.PeerDoneSurface
+import com.peerdone.app.ui.theme.PeerDoneTextPrimary
+import com.peerdone.app.ui.theme.PeerDoneTextSecondary
 import com.peerdone.app.ui.theme.PeerDoneWhite
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NetworkScreen(
     modifier: Modifier = Modifier
@@ -97,12 +105,96 @@ fun NetworkScreen(
     val rawPeerInfos by nearbyClient.connectedPeerInfos.collectAsState()
     val deliveryMetrics by nearbyClient.deliveryMetrics.collectAsState()
     val peerInfos = remember(rawPeerInfos) { rawPeerInfos.distinctBy { it.userId } }
+    var showDevicesSheet by remember { mutableStateOf(false) }
+    val scrollState = rememberScrollState()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    if (showDevicesSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showDevicesSheet = false },
+            sheetState = sheetState,
+            containerColor = PeerDoneSurface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 32.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = "Устройства в сети",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PeerDoneTextPrimary,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+                HorizontalDivider(color = PeerDoneGray.copy(alpha = 0.3f))
+                Spacer(modifier = Modifier.height(12.dp))
+                if (peerInfos.isEmpty()) {
+                    Text(
+                        text = "Нет подключённых устройств",
+                        fontSize = 14.sp,
+                        color = PeerDoneTextSecondary,
+                        modifier = Modifier.padding(vertical = 24.dp)
+                    )
+                } else {
+                    peerInfos.forEach { peer ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(CircleShape)
+                                        .background(PeerDonePrimary.copy(alpha = 0.3f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = peer.userId.firstOrNull()?.uppercase() ?: "?",
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = PeerDonePrimary
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        text = peer.displayName.ifBlank { peer.deviceModel }.ifBlank { peer.userId.take(16) }.ifBlank { "Устройство" },
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = PeerDoneTextPrimary
+                                    )
+                                    Text(
+                                        text = peer.userId.take(20) + if (peer.userId.length > 20) "…" else "",
+                                        fontSize = 12.sp,
+                                        color = PeerDoneTextSecondary
+                                    )
+                                }
+                            }
+                            Text(
+                                text = if (deliveryMetrics.avgAckRttMs > 0) "~${deliveryMetrics.avgAckRttMs} мс" else "—",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = PeerDonePrimary
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(PeerDoneBackground)
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = 20.dp)
     ) {
         Spacer(modifier = Modifier.height(60.dp))
@@ -130,7 +222,8 @@ fun NetworkScreen(
         NetworkStatCard(
             label = "Устройств в сети",
             value = if (!isRunning) "—" else if (peerInfos.isEmpty()) "Идёт поиск..." else "${peerInfos.size}",
-            valueColor = PeerDonePrimary
+            valueColor = PeerDonePrimary,
+            onClick = { showDevicesSheet = true }
         )
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -155,7 +248,7 @@ fun NetworkScreen(
             text = "Метрики",
             fontSize = 18.sp,
             fontWeight = FontWeight.SemiBold,
-            color = PeerDoneWhite
+            color = PeerDoneTextPrimary
         )
         Spacer(modifier = Modifier.height(8.dp))
         NetworkStatCard(
@@ -268,16 +361,35 @@ fun NetworkScreen(
             text = "Карта устройств",
             fontSize = 18.sp,
             fontWeight = FontWeight.SemiBold,
-            color = PeerDoneWhite
+            color = PeerDoneTextPrimary
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        LazyColumn(
-            modifier = Modifier.heightIn(min = 120.dp, max = 320.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(peerInfos) { peer ->
+        if (peerInfos.isEmpty() && topology.edges.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_network),
+                        contentDescription = null,
+                        modifier = Modifier.size(56.dp),
+                        tint = PeerDoneGray
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Нет активных соединений",
+                        color = PeerDoneGray,
+                        fontSize = 14.sp
+                    )
+                }
+            }
+        } else {
+            peerInfos.forEach { peer ->
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -298,7 +410,7 @@ fun NetworkScreen(
                                 text = peer.userId.firstOrNull()?.uppercase() ?: "?",
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = PeerDoneWhite
+                                color = PeerDonePrimary
                             )
                         }
                         Spacer(modifier = Modifier.width(12.dp))
@@ -307,7 +419,7 @@ fun NetworkScreen(
                                 text = peer.displayName.ifBlank { peer.deviceModel }.ifBlank { peer.userId.take(16) }.ifBlank { "Устройство" },
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Medium,
-                                color = PeerDoneWhite
+                                color = PeerDoneTextPrimary
                             )
                             Text(
                                 text = peer.userId.take(14) + if (peer.userId.length > 14) "…" else "",
@@ -332,9 +444,9 @@ fun NetworkScreen(
                         }
                     }
                 }
+                Spacer(modifier = Modifier.height(8.dp))
             }
-
-            items(topology.edges.take(50)) { edge ->
+            topology.edges.take(50).forEach { edge ->
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -354,36 +466,11 @@ fun NetworkScreen(
                         Text(
                             text = "${edge.fromNode.take(8)}... → ${edge.toNode.take(8)}...",
                             fontSize = 14.sp,
-                            color = PeerDoneWhite
+                            color = PeerDoneTextPrimary
                         )
                     }
                 }
-            }
-
-            if (peerInfos.isEmpty() && topology.edges.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 32.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.ic_network),
-                                contentDescription = null,
-                                modifier = Modifier.size(56.dp),
-                                tint = PeerDoneGray
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = "Нет активных соединений",
-                                color = PeerDoneGray,
-                                fontSize = 14.sp
-                            )
-                        }
-                    }
-                }
+                Spacer(modifier = Modifier.height(8.dp))
             }
         }
 
@@ -422,10 +509,15 @@ private fun NetworkStatCard(
     label: String,
     value: String,
     valueColor: Color = PeerDoneDarkGray,
+    onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
+            ),
         shape = RoundedCornerShape(40.dp),
         color = PeerDoneInputFieldSolid
     ) {
