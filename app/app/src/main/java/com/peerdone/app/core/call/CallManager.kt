@@ -377,7 +377,8 @@ class CallManager(
         val c = _activeCall.value ?: return false
         val v = !c.isMuted
         _activeCall.value = c.copy(isMuted = v)
-        if (webrtcSession != null) webrtcSession.setMuted(v) else audioCapture.setMuted(v)
+        val session = webrtcSession
+        if (session != null) session.setMuted(v) else audioCapture.setMuted(v)
         return v
     }
 
