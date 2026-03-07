@@ -64,7 +64,8 @@ import com.peerdone.app.core.transport.TransportAdapter
 import com.peerdone.app.core.transport.TransportHealth
 import com.peerdone.app.core.transport.TransportRegistry
 import com.peerdone.app.core.transport.TransportType
-import com.peerdone.app.data.NearbyTransportAdapter
+import com.peerdone.app.data.PreferencesStore
+import com.peerdone.app.data.RouterTransportAdapter
 import com.peerdone.app.data.StoredChatMessage
 import com.peerdone.app.data.StoredMessageType
 import com.peerdone.app.di.LocalDeviceIdentity
@@ -151,9 +152,10 @@ fun ChatScreen(
     var messageDraft by remember { mutableStateOf("") }
     var isRecordingVoice by remember { mutableStateOf(false) }
 
+    val prefsStore = remember(context) { PreferencesStore(context) }
     val adapters = remember(nearbyClient) {
         listOf<TransportAdapter>(
-            NearbyTransportAdapter(nearbyClient),
+            RouterTransportAdapter(nearbyClient),
             StubTransportAdapter(
                 type = TransportType.BLUETOOTH_LE,
                 staticHealth = TransportHealth(TransportType.BLUETOOTH_LE, false, 250, 800, 7, 4),
@@ -166,8 +168,18 @@ fun ChatScreen(
             adapters.forEach { adapter -> register { adapter.health() } }
         }
     }
-    val sendOrchestrator = remember(adaptersByType, transportRegistry) {
-        SendOrchestrator(adaptersByType, transportRegistry)
+    val sendOrchestrator = remember(adaptersByType, transportRegistry, prefsStore) {
+        SendOrchestrator(
+            adaptersByType,
+            transportRegistry,
+            preferredTransport = {
+                when (prefsStore.preferredTransportSync()) {
+                    "wifi_direct" -> TransportType.WIFI_DIRECT
+                    "nearby" -> TransportType.NEARBY
+                    else -> null
+                }
+            },
+        )
     }
 
     val targetPeerId = remember(peerId) { peerId.substringBefore("|").trim() }

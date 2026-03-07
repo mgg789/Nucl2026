@@ -18,6 +18,7 @@ import org.webrtc.SessionDescription
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.VideoSink
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 
 /**
@@ -43,6 +44,9 @@ class WebRtcCallSession(
     private var cameraCapturer: org.webrtc.VideoCapturer? = null
     private var localVideoSink: VideoSink? = null
     private val tag = "WebRtcCallSession"
+    /** ICE кандидаты приходят до setRemoteDescription; по спецификации добавлять их нужно после. */
+    private val pendingIceCandidates = CopyOnWriteArrayList<String>()
+    private var remoteDescriptionSet = false
 
     init {
         executor.execute {
@@ -89,7 +93,11 @@ class WebRtcCallSession(
             val desc = SessionDescription(SessionDescription.Type.OFFER, sdp)
             peerConnection?.setRemoteDescription(object : SdpObserver {
                 override fun onCreateSuccess(p0: SessionDescription?) {}
-                override fun onSetSuccess() { createAnswer() }
+                override fun onSetSuccess() {
+                    remoteDescriptionSet = true
+                    flushPendingIceCandidates()
+                    createAnswer()
+                }
                 override fun onCreateFailure(error: String?) {}
                 override fun onSetFailure(error: String?) { Log.e(tag, "setRemoteOffer failed: $error") }
             }, desc)
@@ -204,26 +212,45 @@ class WebRtcCallSession(
             val desc = SessionDescription(SessionDescription.Type.ANSWER, sdp)
             peerConnection?.setRemoteDescription(object : SdpObserver {
                 override fun onCreateSuccess(p0: SessionDescription?) {}
-                override fun onSetSuccess() { onConnected() }
+                override fun onSetSuccess() {
+                    remoteDescriptionSet = true
+                    flushPendingIceCandidates()
+                    // onConnected() вызовется из onIceConnectionChange(CONNECTED)
+                }
                 override fun onCreateFailure(error: String?) {}
-                override fun onSetFailure(error: String?) {}
+                override fun onSetFailure(error: String?) { Log.e(tag, "setRemoteAnswer failed: $error") }
             }, desc)
         }
     }
 
     fun addIceCandidate(payload: String) {
         executor.execute {
-            val parts = payload.removePrefix("ice\n").split("\n", limit = 3)
-            if (parts.size < 3) return@execute
-            val sdpMid = parts[0]
-            val sdpMLineIndex = parts.getOrNull(1)?.toIntOrNull() ?: 0
-            val candidate = parts[2]
-            val ice = IceCandidate(sdpMid, sdpMLineIndex, candidate)
-            peerConnection?.addIceCandidate(ice, object : org.webrtc.AddIceObserver {
-                override fun onAddSuccess() { Log.d(tag, "addIceCandidate success") }
-                override fun onAddFailure(error: String?) { Log.e(tag, "addIceCandidate failed: $error") }
-            })
+            if (!remoteDescriptionSet) {
+                pendingIceCandidates.add(payload)
+                return@execute
+            }
+            addIceCandidateInternal(payload)
         }
+    }
+
+    private fun flushPendingIceCandidates() {
+        pendingIceCandidates.forEach { addIceCandidateInternal(it) }
+        pendingIceCandidates.clear()
+    }
+
+    private fun addIceCandidateInternal(payload: String) {
+        val rest = payload.removePrefix("ice\n") ?: return
+        val firstNl = rest.indexOf('\n')
+        val secondNl = if (firstNl >= 0) rest.indexOf('\n', firstNl + 1) else -1
+        if (firstNl < 0 || secondNl < 0) return
+        val sdpMid = rest.substring(0, firstNl)
+        val sdpMLineIndex = rest.substring(firstNl + 1, secondNl).toIntOrNull() ?: 0
+        val candidate = rest.substring(secondNl + 1)
+        val ice = IceCandidate(sdpMid, sdpMLineIndex, candidate)
+        peerConnection?.addIceCandidate(ice, object : org.webrtc.AddIceObserver {
+            override fun onAddSuccess() { Log.d(tag, "addIceCandidate success") }
+            override fun onAddFailure(error: String?) { Log.e(tag, "addIceCandidate failed: $error") }
+        })
     }
 
     private fun sendIce(candidate: IceCandidate) {

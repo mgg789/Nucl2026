@@ -1,9 +1,13 @@
 package com.peerdone.app.core.transport
 
 object TransportStrategy {
+    /**
+     * @param preferred Если задан и доступен в healthList (available), выбирается он; иначе — по score.
+     */
     fun chooseBest(
         deliveryClass: DeliveryClass,
         healthList: List<TransportHealth>,
+        preferred: TransportType? = null,
     ): TransportDecision {
         val available = healthList.filter { it.available }
         if (available.isEmpty()) {
@@ -14,8 +18,12 @@ object TransportStrategy {
             )
         }
 
+        val preferredAndAvailable = preferred?.let { p -> available.find { it.type == p } }
         val ranked = available.sortedByDescending { score(it, deliveryClass) }
-        val selected = ranked.first().type
+        val selected = when {
+            preferredAndAvailable != null -> preferredAndAvailable.type
+            else -> ranked.first().type
+        }
         return TransportDecision(
             selected = selected,
             ranked = ranked,

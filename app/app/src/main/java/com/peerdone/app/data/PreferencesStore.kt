@@ -21,6 +21,24 @@ class PreferencesStore(private val context: Context) {
         private val USER_FIRST_NAME = stringPreferencesKey("user_first_name")
         private val USER_LAST_NAME = stringPreferencesKey("user_last_name")
         private val USER_NICKNAME = stringPreferencesKey("user_nickname")
+        /** "auto" | "nearby" | "wifi_direct" — какой транспорт использовать для общения. */
+        private val PREFERRED_TRANSPORT = stringPreferencesKey("preferred_transport")
+    }
+
+    val preferredTransport: Flow<String> = context.dataStore.data
+        .map { it[PREFERRED_TRANSPORT] ?: "auto" }
+
+    fun preferredTransportSync(): String = runBlocking {
+        context.dataStore.data.first()[PREFERRED_TRANSPORT] ?: "auto"
+    }
+
+    suspend fun setPreferredTransport(value: String) {
+        context.dataStore.edit { prefs ->
+            prefs[PREFERRED_TRANSPORT] = when (value) {
+                "nearby", "wifi_direct" -> value
+                else -> "auto"
+            }
+        }
     }
 
     val onboardingCompleted: Flow<Boolean> = context.dataStore.data

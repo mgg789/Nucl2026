@@ -46,6 +46,7 @@ import java.io.File
 import java.security.MessageDigest
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import android.util.Log
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.random.Random
@@ -430,6 +431,9 @@ class NearbyMeshClient(
 
                 // Realtime (calls/audio): только 1:1, не форвардить — иначе звонок приходит всем в сети
                 if (content is OutboundContent.CallSignal || content is OutboundContent.AudioPacket) {
+                    if (content is OutboundContent.CallSignal) {
+                        Log.d("PeerDoneCall", "RX CallSignal phase=${content.phase} callId=${content.callId.take(8)} recipient=${envelope.recipientUserId?.take(20)} canRead=$canRead plainTextNull=${plainText == null}")
+                    }
                     val msg = ReceivedMeshMessage(
                         fromEndpointId = fromEndpointId,
                         envelope = envelope,
@@ -805,9 +809,15 @@ class NearbyMeshClient(
         val normPeer = peerUserId.substringBefore("|").trim()
         val endpointId = peerNamesByEndpoint.entries.find { it.value == normPeer || it.value.startsWith("$normPeer|") }?.key
             ?: run {
+                if (content is OutboundContent.CallSignal) {
+                    Log.e("PeerDoneCall", "sendToPeer FAIL: no endpoint for peer normPeer=$normPeer phase=${content.phase} available=${peerNamesByEndpoint.values.take(5)}")
+                }
                 log("sendToPeer: no endpoint for peer $normPeer")
                 return 0
             }
+        if (content is OutboundContent.CallSignal) {
+            Log.d("PeerDoneCall", "sendToPeer OK phase=${content.phase} toNormPeer=$normPeer endpointFound=true")
+        }
         val policy = AccessPolicy()
         val encoded = ContentCodec.encode(content)
         val envelope = buildChatEnvelope(sender, encoded, policy, ttl = 1, recipientUserId = normPeer) ?: return 0

@@ -1,5 +1,6 @@
 package com.peerdone.app.ui.components
 
+import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -35,6 +36,7 @@ fun CallSignalHandler() {
             val peerName = peerId.take(16)
             when (content) {
                 is OutboundContent.CallSignal -> {
+                    Log.d("PeerDoneCall", "CallSignalHandler dispatch phase=${content.phase} callId=${content.callId.take(8)} peerId=${peerId.take(20)}")
                     callManager.handleIncomingSignal(
                         callId = content.callId,
                         phase = content.phase,

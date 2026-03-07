@@ -40,6 +40,7 @@ data class DispatchOutcome(
 class SendOrchestrator(
     private val adapters: Map<TransportType, TransportAdapter>,
     private val transportRegistry: TransportRegistry,
+    private val preferredTransport: () -> TransportType? = { null },
 ) {
     private val maxBulkPerFlush = 8
     private val pending = mutableListOf<OutboundQueuedMessage>()
@@ -156,6 +157,7 @@ class SendOrchestrator(
         val decision = TransportStrategy.chooseBest(
             deliveryClass = msg.deliveryClass,
             healthList = transportRegistry.snapshot(),
+            preferred = preferredTransport(),
         )
         val selected = decision.selected
         if (selected == null) {

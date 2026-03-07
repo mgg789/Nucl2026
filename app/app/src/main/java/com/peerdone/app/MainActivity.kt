@@ -35,7 +35,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             PeerDoneTheme(darkTheme = true) {
                 CompositionLocalProvider(
-                    LocalNearbyClient provides app.nearbyMeshClient,
+                    LocalNearbyClient provides app.meshClientRouter,
                     LocalDeviceIdentity provides app.deviceIdentityStore,
                     LocalCallManager provides app.callManager
                 ) {

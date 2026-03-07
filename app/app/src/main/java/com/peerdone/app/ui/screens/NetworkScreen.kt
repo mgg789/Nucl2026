@@ -44,7 +44,7 @@ import com.peerdone.app.core.transport.TransportType
 import com.peerdone.app.core.transport.DeliveryClass
 import com.peerdone.app.domain.AccessPolicy
 import com.peerdone.app.service.SendOrchestrator
-import com.peerdone.app.data.NearbyTransportAdapter
+import com.peerdone.app.data.RouterTransportAdapter
 import com.peerdone.app.core.transport.TransportAdapter
 import com.peerdone.app.core.transport.StubTransportAdapter
 import kotlinx.coroutines.launch
@@ -236,11 +236,56 @@ fun NetworkScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
+        val scope = rememberCoroutineScope()
+        val prefsStore = remember(context) { PreferencesStore(context) }
+        val preferredTransport by prefsStore.preferredTransport.collectAsState(initial = "auto")
+        val transportLabel = when (preferredTransport) {
+            "nearby" -> "Nearby (BLE + Wi‑Fi)"
+            "wifi_direct" -> "WiFi Direct"
+            else -> "Авто (Nearby)"
+        }
         NetworkStatCard(
             label = "Транспорт",
-            value = "Nearby (BLE + Wi‑Fi)",
+            value = transportLabel,
             valueColor = PeerDoneBlue
         )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Протокол общения",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            color = PeerDoneTextSecondary
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf("auto" to "Авто", "nearby" to "Nearby", "wifi_direct" to "WiFi Direct").forEach { (value, label) ->
+                val selected = preferredTransport == value
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = if (selected) PeerDonePrimary.copy(alpha = 0.25f) else PeerDoneSurface,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable {
+                            scope.launch {
+                                prefsStore.setPreferredTransport(value)
+                            }
+                        }
+                ) {
+                    Text(
+                        text = label,
+                        fontSize = 12.sp,
+                        color = if (selected) PeerDonePrimary else PeerDoneTextSecondary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -280,7 +325,7 @@ fun NetworkScreen(
 
         val adapters = remember(nearbyClient) {
             listOf<TransportAdapter>(
-                NearbyTransportAdapter(nearbyClient),
+                RouterTransportAdapter(nearbyClient),
                 StubTransportAdapter(
                     type = TransportType.BLUETOOTH_LE,
                     staticHealth = TransportHealth(TransportType.BLUETOOTH_LE, false, 250, 800, 7, 4),
@@ -291,10 +336,19 @@ fun NetworkScreen(
         val transportRegistry = remember(adapters) {
             TransportRegistry().apply { adapters.forEach { register { it.health() } } }
         }
-        val sendOrchestrator = remember(adaptersByType, transportRegistry) {
-            SendOrchestrator(adaptersByType, transportRegistry)
+        val sendOrchestrator = remember(adaptersByType, transportRegistry, prefsStore) {
+            SendOrchestrator(
+                adaptersByType,
+                transportRegistry,
+                preferredTransport = {
+                    when (prefsStore.preferredTransportSync()) {
+                        "wifi_direct" -> TransportType.WIFI_DIRECT
+                        "nearby" -> TransportType.NEARBY
+                        else -> null
+                    }
+                },
+            )
         }
-        val scope = rememberCoroutineScope()
         var rateLimitTestRunning by remember { mutableStateOf(false) }
 
         Button(

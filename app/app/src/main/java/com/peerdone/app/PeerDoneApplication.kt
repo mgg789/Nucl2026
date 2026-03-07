@@ -3,12 +3,36 @@ package com.peerdone.app
 import android.app.Application
 import com.peerdone.app.core.call.CallManager
 import com.peerdone.app.data.DeviceIdentityStore
+import com.peerdone.app.data.MeshClientRouter
 import com.peerdone.app.data.NearbyMeshClient
+import com.peerdone.app.data.PreferencesStore
+import com.peerdone.app.data.WifiDirectMeshClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 class PeerDoneApplication : Application() {
 
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    val preferencesStore: PreferencesStore by lazy { PreferencesStore(this) }
+
     val nearbyMeshClient: NearbyMeshClient by lazy {
         NearbyMeshClient(this)
+    }
+
+    val wifiDirectMeshClient: WifiDirectMeshClient by lazy {
+        WifiDirectMeshClient(this)
+    }
+
+    val meshClientRouter: MeshClientRouter by lazy {
+        MeshClientRouter(
+            scope = applicationScope,
+            preferenceFlow = preferencesStore.preferredTransport,
+            getPreferenceSync = { preferencesStore.preferredTransportSync() },
+            nearby = nearbyMeshClient,
+            wifiDirect = wifiDirectMeshClient,
+        )
     }
 
     val deviceIdentityStore: DeviceIdentityStore by lazy {
@@ -16,7 +40,7 @@ class PeerDoneApplication : Application() {
     }
 
     val callManager: CallManager by lazy {
-        CallManager(this, nearbyMeshClient, deviceIdentityStore.getOrCreate())
+        CallManager(this, meshClientRouter, deviceIdentityStore.getOrCreate())
     }
 
     companion object {

@@ -3,13 +3,14 @@ package com.peerdone.app.core.call
 import android.content.Context
 import android.media.AudioManager
 import android.os.Handler
+import android.util.Log
 import android.os.Looper
 import android.util.Base64
 import com.peerdone.app.core.audio.AudioCaptureManager
 import com.peerdone.app.core.audio.AudioPlaybackManager
 import com.peerdone.app.core.audio.JitterStats
 import com.peerdone.app.core.message.OutboundContent
-import com.peerdone.app.data.NearbyMeshClient
+import com.peerdone.app.data.MeshClientRouter
 import com.peerdone.app.domain.LocalIdentity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +26,7 @@ import java.util.UUID
 
 private const val SDP_CHUNK_SIZE = 8000
 private const val SDP_CHUNK_THRESHOLD = 25_000
+private const val CALL_LOG_TAG = "PeerDoneCall"
 
 enum class CallDirection { OUTGOING, INCOMING }
 
@@ -51,7 +53,7 @@ data class CallMetrics(
  */
 class CallManager(
     private val context: Context,
-    private val nearbyClient: NearbyMeshClient,
+    private val meshClient: MeshClientRouter,
     private val localIdentity: LocalIdentity
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -88,9 +90,10 @@ class CallManager(
 
     /** Отправка сигнала звонка. targetPeerId: только этому пиру (1:1); иначе broadcast. */
     private fun sendCallSignal(callId: String, phase: String, sdpOrIce: String, targetPeerId: String?) {
+        Log.d(CALL_LOG_TAG, "sendCallSignal phase=$phase callId=${callId.take(8)} targetPeerId=${targetPeerId?.take(20)}")
         val signal = { content: OutboundContent.CallSignal ->
-            if (targetPeerId != null) nearbyClient.sendToPeer(targetPeerId, localIdentity, content)
-            else nearbyClient.broadcast(localIdentity, content)
+            if (targetPeerId != null) meshClient.sendToPeer(targetPeerId, localIdentity, content)
+            else meshClient.broadcast(localIdentity, content)
         }
         if ((phase == "offer" || phase == "answer") && sdpOrIce.length > SDP_CHUNK_THRESHOLD) {
             val parts = sdpOrIce.chunked(SDP_CHUNK_SIZE)
@@ -124,9 +127,12 @@ class CallManager(
             isInitiator = true,
             onSendSignal = { phase, payload -> sendCallSignal(callId, phase, payload, peerId) },
             onConnected = {
-                callStartTime = System.currentTimeMillis()
-                _activeCall.value = _activeCall.value?.copy(state = CallState.ACTIVE)
-                _callState.value = CallState.ACTIVE
+                Handler(Looper.getMainLooper()).post {
+                    callStartTime = System.currentTimeMillis()
+                    _activeCall.value = _activeCall.value?.copy(state = CallState.ACTIVE)
+                    _callState.value = CallState.ACTIVE
+                    startAudioStreamFallback()
+                }
             },
             onDisconnected = { endCallInternal() },
             onRemoteVideoTrack = { track ->
@@ -172,22 +178,32 @@ class CallManager(
                 }
             }
             "answer" -> {
-                val current = _activeCall.value ?: return
-                if (current.callId != callId || current.direction != CallDirection.OUTGOING) return
-                if (normPeer(current.peerId) != normPeer(peerId)) return
+                val current = _activeCall.value
+                Log.d(CALL_LOG_TAG, "handleAnswer callId=$callId peerId=$peerId current=${current?.callId?.take(8)} dir=${current?.direction} currentPeer=${current?.peerId?.take(20)}")
+                if (current == null) {
+                    Log.w(CALL_LOG_TAG, "handleAnswer skip: no activeCall")
+                    return
+                }
+                if (current.callId != callId || current.direction != CallDirection.OUTGOING) {
+                    Log.w(CALL_LOG_TAG, "handleAnswer skip: callId or direction mismatch")
+                    return
+                }
+                if (normPeer(current.peerId) != normPeer(peerId)) {
+                    Log.w(CALL_LOG_TAG, "handleAnswer skip: peerId mismatch normCurrent=${normPeer(current.peerId)} normPeer=${normPeer(peerId)}")
+                    return
+                }
                 when {
                     sdpOrIce.startsWith("chunks|") -> {
                         val total = sdpOrIce.removePrefix("chunks|").trim().toIntOrNull() ?: return
-                        answerChunks[callId] = SdpChunkAccumulator(total, mutableMapOf())
+                        answerChunks.getOrPut(callId) { SdpChunkAccumulator(total, mutableMapOf()) }
                         _activeCall.value = current.copy(state = CallState.CONNECTING)
                         _callState.value = CallState.CONNECTING
-                        startAudioStreamFallback()
                     }
                     sdpOrIce.startsWith("answer\n") -> {
+                        Log.d(CALL_LOG_TAG, "handleAnswer applying setRemoteAnswer len=${sdpOrIce.length}")
                         _activeCall.value = current.copy(state = CallState.CONNECTING)
                         _callState.value = CallState.CONNECTING
                         webrtcSession?.setRemoteAnswer(sdpOrIce)
-                        startAudioStreamFallback()
                     }
                 }
             }
@@ -195,14 +211,16 @@ class CallManager(
                 val current = _activeCall.value ?: return
                 if (current.callId != callId || normPeer(current.peerId) != normPeer(peerId)) return
                 val (index, total, b64) = parseChunkPayload(sdpOrIce) ?: return
-                val acc = answerChunks[callId] ?: return
+                val acc = answerChunks.getOrPut(callId) { SdpChunkAccumulator(total, mutableMapOf()) }
+                if (acc.chunks.size >= total && index !in acc.chunks) {
+                    Log.w(CALL_LOG_TAG, "answer_chunk duplicate or wrong total? index=$index total=$total")
+                }
                 acc.add(index, runCatching { String(Base64.decode(b64, Base64.NO_WRAP), Charsets.UTF_8) }.getOrNull() ?: return)
                 if (acc.isComplete()) {
                     answerChunks.remove(callId)
                     _activeCall.value = current.copy(state = CallState.CONNECTING)
                     _callState.value = CallState.CONNECTING
                     webrtcSession?.setRemoteAnswer("answer\n${acc.reassemble()}")
-                    startAudioStreamFallback()
                 }
             }
             "ice" -> {
@@ -240,9 +258,12 @@ class CallManager(
             isInitiator = false,
             onSendSignal = { phase, payload -> sendCallSignal(callId, phase, payload, peerId) },
             onConnected = {
-                callStartTime = System.currentTimeMillis()
-                _activeCall.value = _activeCall.value?.copy(state = CallState.ACTIVE)
-                _callState.value = CallState.ACTIVE
+                Handler(Looper.getMainLooper()).post {
+                    callStartTime = System.currentTimeMillis()
+                    _activeCall.value = _activeCall.value?.copy(state = CallState.ACTIVE)
+                    _callState.value = CallState.ACTIVE
+                    startAudioStreamFallback()
+                }
             },
             onDisconnected = { endCallInternal() },
             onRemoteVideoTrack = { track ->
@@ -268,8 +289,7 @@ class CallManager(
 
         ensureWebRtcSessionCallee(incoming.callId, incoming.peerId, incoming.peerName)
         if (!fullOffer.isNullOrEmpty()) webrtcSession?.setRemoteOffer(fullOffer)
-        // Реальный SDP answer отправится из WebRtcCallSession после createAnswer() в onSendSignal
-        startAudioStreamFallback()
+        // Реальный SDP answer уйдёт из WebRtcCallSession после createAnswer(). ACTIVE и таймер — только по onConnected (ICE).
     }
 
     fun declineCall() {
@@ -326,7 +346,7 @@ class CallManager(
                 val c = _activeCall.value
                 val peerId = c?.peerId ?: targetPeerId
                 if (c != null && c.state == CallState.ACTIVE && peerId != null) {
-                    nearbyClient.sendToPeer(
+                    meshClient.sendToPeer(
                         peerId,
                         localIdentity,
                         OutboundContent.AudioPacket(callId = c.callId, sequenceNumber = frame.sequenceNumber, timestampMs = frame.timestampMs, audioDataBase64 = frame.base64Data)

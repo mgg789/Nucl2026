@@ -3,10 +3,10 @@ package com.peerdone.app.di
 import androidx.compose.runtime.staticCompositionLocalOf
 import com.peerdone.app.core.call.CallManager
 import com.peerdone.app.data.DeviceIdentityStore
-import com.peerdone.app.data.NearbyMeshClient
+import com.peerdone.app.data.MeshClientRouter
 
-val LocalNearbyClient = staticCompositionLocalOf<NearbyMeshClient> {
-    error("NearbyMeshClient not provided. Wrap your composable with CompositionLocalProvider.")
+val LocalNearbyClient = staticCompositionLocalOf<MeshClientRouter> {
+    error("MeshClientRouter not provided. Wrap your composable with CompositionLocalProvider.")
 }
 
 val LocalDeviceIdentity = staticCompositionLocalOf<DeviceIdentityStore> {
