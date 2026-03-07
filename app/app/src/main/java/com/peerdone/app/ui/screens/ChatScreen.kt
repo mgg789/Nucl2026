@@ -199,36 +199,6 @@ fun ChatScreen(
         } catch (_: Exception) {}
     }
 
-    val videoNotePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        try {
-            val fileName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                if (cursor.moveToFirst() && nameIndex >= 0) cursor.getString(nameIndex) else null
-            } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "video.mp4"
-            val mimeType = context.contentResolver.getType(uri) ?: "video/mp4"
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@rememberLauncherForActivityResult
-            sendOrchestrator.enqueueFileTransfer(
-                sender = localIdentity,
-                fileName = fileName,
-                mimeType = mimeType,
-                bytes = bytes,
-                policy = AccessPolicy(),
-                targetPeerId = targetPeerId,
-            )
-            localMessages += ChatMessage(
-                id = "local_videonote_${System.currentTimeMillis()}",
-                text = "Видео",
-                timestampMs = System.currentTimeMillis(),
-                isOutgoing = true,
-                type = ChatMessageType.VIDEO_NOTE,
-                fileName = fileName
-            )
-        } catch (_: Exception) {}
-    }
-
     val remoteMessages = remember(incoming, peerId) {
         val normalizedPeerId = peerId.substringBefore("|").trim()
         incoming
@@ -417,8 +387,7 @@ fun ChatScreen(
                         isRecordingVoice = true
                     }
                 },
-                onAttach = { filePickerLauncher.launch("*/*") },
-                onVideoNote = { videoNotePickerLauncher.launch("video/*") }
+                onAttach = { filePickerLauncher.launch("*/*") }
             )
         }
     }
@@ -840,7 +809,6 @@ private fun ChatInputBar(
     onSend: () -> Unit,
     onMicClick: () -> Unit,
     onAttach: () -> Unit,
-    onVideoNote: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -865,24 +833,6 @@ private fun ChatInputBar(
                 Icon(
                     painter = painterResource(id = R.drawable.ic_plus),
                     contentDescription = "Прикрепить файл",
-                    modifier = Modifier.size(24.dp),
-                    tint = PeerDoneWhite
-                )
-            }
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(PeerDonePrimaryVariant)
-                    .clickable(onClick = onVideoNote),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_videocam),
-                    contentDescription = "Видеокружок",
                     modifier = Modifier.size(24.dp),
                     tint = PeerDoneWhite
                 )

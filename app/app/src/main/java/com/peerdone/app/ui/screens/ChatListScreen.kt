@@ -78,31 +78,35 @@ fun ChatListScreen(
     val nearbyClient = LocalNearbyClient.current
 
     val localIdentity = remember { identityStore.getOrCreate() }
-    val topology by nearbyClient.topology.collectAsState()
+    val connectedPeers by nearbyClient.connectedPeerInfos.collectAsState()
     val incoming by nearbyClient.incomingMessages.collectAsState()
 
     var selectedFilter by remember { mutableStateOf(ChatFilter.CHATS) }
 
     fun normalizePeerId(s: String): String = s.substringBefore("|").trim()
     val localUserId = normalizePeerId(localIdentity.userId)
-    val onlinePeers = remember(topology) {
-        topology.nodes.map { normalizePeerId(it) }.toSet()
-    }
-    val chatPreviews = remember(incoming, topology, localIdentity) {
-        val peers = (incoming.map { normalizePeerId(it.envelope.senderUserId) } + topology.nodes.map { normalizePeerId(it) })
+    val chatPreviews = remember(incoming, connectedPeers, localIdentity) {
+        val peerIds = connectedPeers.map { normalizePeerId(it.userId) }
             .filter { it.isNotBlank() && it != localUserId }
             .distinct()
             .sorted()
+        val peerInfoById = connectedPeers.associateBy { normalizePeerId(it.userId) }
 
-        peers.map { peerId ->
+        peerIds.map { peerId ->
+            val info = peerInfoById[peerId]
+            val displayName = when {
+                !info?.displayName.isNullOrBlank() -> info!!.displayName
+                !info?.deviceModel.isNullOrBlank() -> info!!.deviceModel
+                else -> peerId.take(16)
+            }
             val peerMessages = incoming.filter { normalizePeerId(it.envelope.senderUserId) == peerId }
             val lastMsg = peerMessages.lastOrNull()
             ChatPreviewItem(
                 peerId = peerId,
-                displayName = peerId.take(16),
+                displayName = displayName,
                 lastMessage = lastMsg?.contentSummary ?: "Нет сообщений",
                 lastTime = lastMsg?.envelope?.timestampMs?.toTimeString() ?: "--:--",
-                isOnline = peerId in onlinePeers,
+                isOnline = true,
                 unreadCount = peerMessages.count { it.accessGranted }.coerceAtMost(99)
             )
         }
