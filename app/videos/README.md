@@ -6,7 +6,7 @@
 
 ## 1. устройство 1
 
-<video src="https://github.com/mgg789/Nucl2026/blob/main/app/videos/Screenrecorder-2026-03-07-23-59-41-768.mp4" controls width="640"></video>
+<video src="Screenrecorder-2026-03-07-23-59-41-768.mp4" controls width="640"></video>
 
 [Открыть / скачать → Screenrecorder-2026-03-07-23-59-41-768.mp4](Screenrecorder-2026-03-07-23-59-41-768.mp4)
 
@@ -14,7 +14,7 @@
 
 ## 2. устройство 2
 
-<video src="./screen-20260308-000259-1772917177825.mp4" controls width="640"></video>
+<video src="screen-20260308-000259-1772917177825.mp4" controls width="640"></video>
 
 [Открыть / скачать → screen-20260308-000259](screen-20260308-000259-1772917177825.mp4)
 
@@ -22,7 +22,7 @@
 
 ## 3. устройство 3
 
-<video src="./screen-20260308-000303.mp4" controls width="640"></video>
+<video src="screen-20260308-000303.mp4" controls width="640"></video>
 
 [Открыть / скачать → screen-20260308-000303](screen-20260308-000303.mp4)
 
