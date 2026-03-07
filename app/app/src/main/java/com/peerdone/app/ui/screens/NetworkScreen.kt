@@ -1,6 +1,8 @@
 package com.peerdone.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -99,6 +102,7 @@ fun NetworkScreen(
         modifier = modifier
             .fillMaxSize()
             .background(PeerDoneBackground)
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
     ) {
         Spacer(modifier = Modifier.height(60.dp))
@@ -171,6 +175,66 @@ fun NetworkScreen(
             value = "Отпр: ${deliveryMetrics.sentCount} · Доставлено: ${deliveryMetrics.ackedCount} · Потери: ${deliveryMetrics.lossPercent}%",
             valueColor = PeerDoneDarkGray
         )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Пинг обновляется после доставки сообщения (получен ACK).",
+            fontSize = 11.sp,
+            color = PeerDoneGray,
+            modifier = Modifier.padding(horizontal = 4.dp)
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        val adapters = remember(nearbyClient) {
+            listOf<TransportAdapter>(
+                NearbyTransportAdapter(nearbyClient),
+                StubTransportAdapter(
+                    type = TransportType.BLUETOOTH_LE,
+                    staticHealth = TransportHealth(TransportType.BLUETOOTH_LE, false, 250, 800, 7, 4),
+                ),
+            )
+        }
+        val adaptersByType = remember(adapters) { adapters.associateBy { it.type } }
+        val transportRegistry = remember(adapters) {
+            TransportRegistry().apply { adapters.forEach { register { it.health() } } }
+        }
+        val sendOrchestrator = remember(adaptersByType, transportRegistry) {
+            SendOrchestrator(adaptersByType, transportRegistry)
+        }
+        val scope = rememberCoroutineScope()
+        var rateLimitTestRunning by remember { mutableStateOf(false) }
+
+        Button(
+            onClick = {
+                if (rateLimitTestRunning) return@Button
+                rateLimitTestRunning = true
+                scope.launch {
+                    val policy = AccessPolicy()
+                    repeat(50) { i ->
+                        sendOrchestrator.enqueueAndTrySend(
+                            sender = localIdentity,
+                            content = OutboundContent.Text("rate-test #${i + 1}"),
+                            policy = policy,
+                            deliveryClass = DeliveryClass.INTERACTIVE,
+                        )
+                        kotlinx.coroutines.delay(80)
+                    }
+                    rateLimitTestRunning = false
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(24.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = PeerDoneGray),
+            enabled = !rateLimitTestRunning
+        ) {
+            Text(
+                text = if (rateLimitTestRunning) "Отправка…" else "Тест rate limit (50 сообщений)",
+                fontSize = 14.sp,
+                color = PeerDoneWhite
+            )
+        }
 
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -210,7 +274,7 @@ fun NetworkScreen(
         Spacer(modifier = Modifier.height(12.dp))
 
         LazyColumn(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.heightIn(min = 120.dp, max = 320.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(peerInfos) { peer ->
@@ -346,59 +410,6 @@ fun NetworkScreen(
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Medium,
                 color = if (isRunning) PeerDoneStopButtonText else PeerDoneWhite
-            )
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        val adapters = remember(nearbyClient) {
-            listOf<TransportAdapter>(
-                NearbyTransportAdapter(nearbyClient),
-                StubTransportAdapter(
-                    type = TransportType.BLUETOOTH_LE,
-                    staticHealth = TransportHealth(TransportType.BLUETOOTH_LE, false, 250, 800, 7, 4),
-                ),
-            )
-        }
-        val adaptersByType = remember(adapters) { adapters.associateBy { it.type } }
-        val transportRegistry = remember(adapters) {
-            TransportRegistry().apply { adapters.forEach { register { it.health() } } }
-        }
-        val sendOrchestrator = remember(adaptersByType, transportRegistry) {
-            SendOrchestrator(adaptersByType, transportRegistry)
-        }
-        val scope = rememberCoroutineScope()
-        var rateLimitTestRunning by remember { mutableStateOf(false) }
-
-        Button(
-            onClick = {
-                if (rateLimitTestRunning) return@Button
-                rateLimitTestRunning = true
-                scope.launch {
-                    val policy = AccessPolicy()
-                    repeat(50) { i ->
-                        sendOrchestrator.enqueueAndTrySend(
-                            sender = localIdentity,
-                            content = OutboundContent.Text("rate-test #${i + 1}"),
-                            policy = policy,
-                            deliveryClass = DeliveryClass.INTERACTIVE,
-                        )
-                        kotlinx.coroutines.delay(80)
-                    }
-                    rateLimitTestRunning = false
-                }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp),
-            shape = RoundedCornerShape(24.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = PeerDoneGray),
-            enabled = !rateLimitTestRunning
-        ) {
-            Text(
-                text = if (rateLimitTestRunning) "Отправка…" else "Тест rate limit (50 сообщений)",
-                fontSize = 14.sp,
-                color = PeerDoneWhite
             )
         }
 

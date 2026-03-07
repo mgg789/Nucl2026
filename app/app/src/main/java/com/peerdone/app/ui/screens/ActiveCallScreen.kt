@@ -179,35 +179,37 @@ fun ActiveCallScreen(
                         }
                     }
                 }
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(12.dp)
-                        .size(80.dp)
-                        .clip(CircleShape)
-                        .background(PeerDoneDarkGray)
-                ) {
-                    AndroidView(
-                        factory = { ctx ->
-                            SurfaceViewRenderer(ctx).apply {
-                                init(eglBase.eglBaseContext, null)
-                                setZOrderMediaOverlay(true)
-                                setMirror(true)
-                            }
-                        },
-                        update = { renderer ->
-                            if (!localSinkSet) {
-                                callManager.setLocalVideoSink(renderer)
-                                localSinkSet = true
-                            }
-                        },
-                        onRelease = { renderer ->
-                            callManager.setLocalVideoSink(null)
-                            localSinkSet = false
-                            renderer.release()
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
+                if (callState == CallState.ACTIVE) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp)
+                            .size(80.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(PeerDoneGray.copy(alpha = 0.5f))
+                    ) {
+                        AndroidView(
+                            factory = { ctx ->
+                                SurfaceViewRenderer(ctx).apply {
+                                    init(eglBase.eglBaseContext, null)
+                                    setZOrderMediaOverlay(true)
+                                    setMirror(true)
+                                }
+                            },
+                            update = { renderer ->
+                                if (!localSinkSet) {
+                                    callManager.setLocalVideoSink(renderer)
+                                    localSinkSet = true
+                                }
+                            },
+                            onRelease = { renderer ->
+                                callManager.setLocalVideoSink(null)
+                                localSinkSet = false
+                                renderer.release()
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
             

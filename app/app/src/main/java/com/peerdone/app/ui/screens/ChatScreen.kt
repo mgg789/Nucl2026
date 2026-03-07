@@ -402,12 +402,6 @@ fun ChatScreen(
                             deliveryClass = DeliveryClass.INTERACTIVE,
                             targetPeerId = targetPeerId,
                         )
-                        localMessages += ChatMessage(
-                            id = "local_${System.currentTimeMillis()}",
-                            text = messageDraft,
-                            timestampMs = System.currentTimeMillis(),
-                            isOutgoing = true
-                        )
                         messageDraft = ""
                     }
                 },
