@@ -9,8 +9,6 @@ import com.peerdone.app.core.message.OutboundContent
 import com.peerdone.app.core.transport.TransportHealth
 import com.peerdone.app.core.transport.TransportType
 import com.peerdone.app.domain.AccessPolicy
-import com.peerdone.app.domain.fromJson
-import com.peerdone.app.domain.toJson
 import com.peerdone.app.domain.LocalIdentity
 import com.peerdone.app.domain.MeshCrypto
 import com.peerdone.app.domain.MeshEnvelope
