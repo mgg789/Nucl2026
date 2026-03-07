@@ -37,9 +37,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.sp
 import com.peerdone.app.R
+import com.peerdone.app.data.PreferencesStore
 import com.peerdone.app.di.LocalDeviceIdentity
 import com.peerdone.app.di.LocalNearbyClient
 import com.peerdone.app.ui.theme.PeerDoneBackground
@@ -78,16 +80,19 @@ fun ChatListScreen(
     val identityStore = LocalDeviceIdentity.current
     val nearbyClient = LocalNearbyClient.current
 
+    val context = LocalContext.current
     val localIdentity = remember { identityStore.getOrCreate() }
     val connectedPeers by nearbyClient.connectedPeerInfos.collectAsState()
     val incoming by nearbyClient.incomingMessages.collectAsState()
     val chatHistoryByPeer by nearbyClient.chatHistoryStore.byPeer.collectAsState()
+    val prefsStore = remember(context) { PreferencesStore(context) }
+    val lastReadByPeer by prefsStore.lastReadTimestamps.collectAsState(initial = emptyMap())
 
     var selectedFilter by remember { mutableStateOf(ChatFilter.CHATS) }
 
     fun normalizePeerId(s: String): String = s.substringBefore("|").trim()
     val localUserId = normalizePeerId(localIdentity.userId)
-    val chatPreviews = remember(incoming, connectedPeers, chatHistoryByPeer, localIdentity) {
+    val chatPreviews = remember(incoming, connectedPeers, chatHistoryByPeer, lastReadByPeer, localIdentity) {
         val connectedPeerIds = connectedPeers.map { normalizePeerId(it.userId) }
             .filter { it.isNotBlank() && it != localUserId }
             .toSet()
@@ -125,7 +130,7 @@ fun ChatListScreen(
                 lastMessage = lastMsg,
                 lastTime = lastTime,
                 isOnline = peerId in connectedPeerIds,
-                unreadCount = peerIncoming.count { it.accessGranted }.coerceAtMost(99)
+                unreadCount = peerIncoming.count { it.accessGranted && it.envelope.timestampMs > (lastReadByPeer[peerId] ?: 0L) }.coerceAtMost(99)
             )
         }
     }

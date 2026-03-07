@@ -192,6 +192,16 @@ fun ChatScreen(
 
     val targetPeerId = remember(peerId) { peerId.substringBefore("|").trim() }
 
+    LaunchedEffect(peerId, incoming, storedMessages) {
+        val fromPeer = incoming.filter {
+            it.envelope.senderUserId.substringBefore("|").trim() == targetPeerId
+        }
+        val maxIncoming = fromPeer.maxOfOrNull { it.envelope.timestampMs } ?: 0L
+        val maxStored = storedMessages.maxOfOrNull { it.timestampMs } ?: 0L
+        val maxTs = maxOf(maxIncoming, maxStored, System.currentTimeMillis())
+        prefsStore.setLastReadTimestamp(targetPeerId, maxTs)
+    }
+
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
