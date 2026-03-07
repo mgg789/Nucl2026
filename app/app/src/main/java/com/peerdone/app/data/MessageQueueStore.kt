@@ -20,6 +20,8 @@ data class OutboundMessageRecord(
     val state: DeliveryState,
     val retries: Int,
     val updatedAtMs: Long,
+    /** Размер пакета в байтах (сериализованный конверт). null для старых записей. */
+    val payloadSizeBytes: Long? = null,
 )
 
 class MessageQueueStore(context: Context) {
@@ -29,7 +31,7 @@ class MessageQueueStore(context: Context) {
     private val _records = MutableStateFlow(load())
     val records: StateFlow<List<OutboundMessageRecord>> = _records.asStateFlow()
 
-    fun upsertQueued(id: String, preview: String) {
+    fun upsertQueued(id: String, preview: String, payloadSizeBytes: Long? = null) {
         mutate { list ->
             val now = System.currentTimeMillis()
             val filtered = list.filterNot { it.id == id }
@@ -39,6 +41,7 @@ class MessageQueueStore(context: Context) {
                 state = DeliveryState.QUEUED,
                 retries = 0,
                 updatedAtMs = now,
+                payloadSizeBytes = payloadSizeBytes,
             )
         }
     }
@@ -83,6 +86,7 @@ class MessageQueueStore(context: Context) {
                             state = DeliveryState.valueOf(obj.getString("state")),
                             retries = obj.optInt("retries", 0),
                             updatedAtMs = obj.optLong("updatedAtMs", System.currentTimeMillis()),
+                            payloadSizeBytes = if (obj.has("payloadSizeBytes")) obj.getLong("payloadSizeBytes") else null,
                         )
                     )
                 }
@@ -98,14 +102,14 @@ class MessageQueueStore(context: Context) {
     private fun persist(records: List<OutboundMessageRecord>) {
         val arr = JSONArray()
         records.forEach { rec ->
-            arr.put(
-                JSONObject()
-                    .put("id", rec.id)
-                    .put("preview", rec.preview)
-                    .put("state", rec.state.name)
-                    .put("retries", rec.retries)
-                    .put("updatedAtMs", rec.updatedAtMs)
-            )
+            val obj = JSONObject()
+                .put("id", rec.id)
+                .put("preview", rec.preview)
+                .put("state", rec.state.name)
+                .put("retries", rec.retries)
+                .put("updatedAtMs", rec.updatedAtMs)
+            rec.payloadSizeBytes?.let { obj.put("payloadSizeBytes", it) }
+            arr.put(obj)
         }
         prefs.edit().putString(key, arr.toString()).apply()
     }

@@ -642,7 +642,10 @@ private fun PacketItem(record: OutboundMessageRecord) {
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "ID: ${record.id.take(12)}… · ${record.updatedAtMs.toTimeString()}",
+                    text = buildString {
+                        append("ID: ${record.id.take(12)}… · ${record.updatedAtMs.toTimeString()}")
+                        record.payloadSizeBytes?.let { append(" · ${formatPacketSize(it)}") }
+                    },
                     fontSize = 11.sp,
                     color = PeerDoneTextSecondary
                 )
@@ -669,6 +672,13 @@ private fun PacketItem(record: OutboundMessageRecord) {
 private fun Long.toTimeString(): String {
     val s = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
     return s.format(java.util.Date(this))
+}
+
+/** Форматирует размер в Б/Кб/Мб. */
+private fun formatPacketSize(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes Б"
+    bytes < 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f Кб", bytes / 1024.0)
+    else -> String.format(java.util.Locale.US, "%.2f Мб", bytes / (1024.0 * 1024.0))
 }
 
 @Composable

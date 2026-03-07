@@ -844,8 +844,9 @@ class NearbyMeshClient(
             is OutboundContent.Text -> content.text
             else -> "[${content.kind}]"
         }
-        queueStore.upsertQueued(envelope.id, previewText)
         val signed = signEnvelope(envelope)
+        val sizeBytes = signed.toJsonBytes().size.toLong()
+        queueStore.upsertQueued(signed.id, previewText, sizeBytes)
         val sent = sendToTargets(listOf(endpointId), signed)
         queueStore.markSent(signed.id)
         seenMessageIds.add(signed.id)
@@ -880,8 +881,9 @@ class NearbyMeshClient(
             log("No connected peers to send")
             return 0
         }
-        queueStore.upsertQueued(envelope.id, previewText)
         val signed = signEnvelope(envelope)
+        val sizeBytes = signed.toJsonBytes().size.toLong()
+        queueStore.upsertQueued(signed.id, previewText, sizeBytes)
         val sent = sendToTargets(targets, signed)
         queueStore.markSent(signed.id)
         seenMessageIds.add(signed.id)
