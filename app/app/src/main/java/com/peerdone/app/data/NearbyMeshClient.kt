@@ -779,6 +779,9 @@ class NearbyMeshClient(
         currentEndpointName = null
         connected.clear()
         peerNamesByEndpoint.clear()
+        knownNodes.clear()
+        knownEdges.clear()
+        _topology.value = TopologySnapshot()
         _connectedPeerInfos.value = emptyList()
         _realtimeMessages.value = emptyList()
         syncConnected()
