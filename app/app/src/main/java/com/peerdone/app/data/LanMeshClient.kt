@@ -56,13 +56,13 @@ private const val PEER_TIMEOUT_MS = 10_000L
  */
 class LanMeshClient(
     private val context: android.content.Context,
+    val chatHistoryStore: ChatHistoryStore,
 ) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val signer = DeviceKeyStoreSigner()
     private val identityTrustStore = IdentityTrustStore(appContext)
     private val queueStore = MessageQueueStore(appContext)
-    val chatHistoryStore = ChatHistoryStore(appContext)
 
     private var localIdentity: LocalIdentity? = null
     private var currentDisplayName: String? = null

@@ -2,6 +2,7 @@ package com.peerdone.app
 
 import android.app.Application
 import com.peerdone.app.core.call.CallManager
+import com.peerdone.app.data.ChatHistoryStore
 import com.peerdone.app.data.DeviceIdentityStore
 import com.peerdone.app.data.LanMeshClient
 import com.peerdone.app.data.MeshClientRouter
@@ -19,16 +20,19 @@ class PeerDoneApplication : Application() {
 
     val preferencesStore: PreferencesStore by lazy { PreferencesStore(this) }
 
+    /** Единый store истории чатов для всего приложения; очистка на экране данных отражается в чатах. */
+    val chatHistoryStore: ChatHistoryStore by lazy { ChatHistoryStore(this) }
+
     val nearbyMeshClient: NearbyMeshClient by lazy {
-        NearbyMeshClient(this)
+        NearbyMeshClient(this, chatHistoryStore)
     }
 
     val wifiDirectMeshClient: WifiDirectMeshClient by lazy {
-        WifiDirectMeshClient(this)
+        WifiDirectMeshClient(this, chatHistoryStore)
     }
 
     val lanMeshClient: LanMeshClient by lazy {
-        LanMeshClient(this)
+        LanMeshClient(this, chatHistoryStore)
     }
 
     val multiTransportMeshClient: MultiTransportMeshClient by lazy {

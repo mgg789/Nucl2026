@@ -47,13 +47,14 @@ private const val TAG = "WifiDirectMesh"
  */
 class WifiDirectMeshClient(
     private val context: Context,
+    chatHistoryStore: ChatHistoryStore,
 ) {
+    val chatHistoryStore: ChatHistoryStore = chatHistoryStore
     private val appContext = context.applicationContext
     private val manager: WifiP2pManager? = appContext.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
     private val channel: WifiP2pManager.Channel? = manager?.initialize(appContext, appContext.mainLooper, null)
     private val signer = DeviceKeyStoreSigner()
     private val identityTrustStore = IdentityTrustStore(appContext)
-    val chatHistoryStore = ChatHistoryStore(appContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var localIdentity: LocalIdentity? = null

@@ -131,7 +131,7 @@ class CallManager(
                     callStartTime = System.currentTimeMillis()
                     _activeCall.value = _activeCall.value?.copy(state = CallState.ACTIVE)
                     _callState.value = CallState.ACTIVE
-                    startAudioStreamFallback()
+                    setupCallAudioMode()
                 }
             },
             onDisconnected = { endCallInternal() },
@@ -262,7 +262,7 @@ class CallManager(
                     callStartTime = System.currentTimeMillis()
                     _activeCall.value = _activeCall.value?.copy(state = CallState.ACTIVE)
                     _callState.value = CallState.ACTIVE
-                    startAudioStreamFallback()
+                    setupCallAudioMode()
                 }
             },
             onDisconnected = { endCallInternal() },
@@ -329,12 +329,18 @@ class CallManager(
         _callState.value = CallState.IDLE
     }
 
-    private fun startAudioStreamFallback() {
-        audioStreamJob?.cancel()
-        audioStreamJob = null
+    /** Режим аудио для звонка (WebRTC сам передаёт медиа, mesh-fallback — отдельно). */
+    private fun setupCallAudioMode() {
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         @Suppress("DEPRECATION")
         audioManager.requestAudioFocus({ _ -> }, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+    }
+
+    /** Fallback: голос через mesh (AudioPacket), если WebRTC не соединился. */
+    private fun startAudioStreamFallback() {
+        audioStreamJob?.cancel()
+        audioStreamJob = null
+        setupCallAudioMode()
         callStartTime = System.currentTimeMillis()
         audioCapture.start()
         audioPlayback.start()
@@ -371,7 +377,8 @@ class CallManager(
         val c = _activeCall.value ?: return false
         val v = !c.isMuted
         _activeCall.value = c.copy(isMuted = v)
-        audioCapture.setMuted(v)
+        val session = webrtcSession
+        if (session != null) session.setMuted(v) else audioCapture.setMuted(v)
         return v
     }
 
