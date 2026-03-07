@@ -2,13 +2,13 @@ package com.peerdone.app.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// PeerDone color palette - EXACT match from Figma design
+// PeerDone color palette - white theme
 
 // Backgrounds
-val PeerDoneBackground = Color(0xFF121212)
-val PeerDoneSurface = Color(0xFF1E1E1E)
-val PeerDoneSurfaceLow = Color(0xFF242424)
-val PeerDoneSurfaceLight = Color(0xFFF3F3F3)
+val PeerDoneBackground = Color(0xFFFFFFFF)
+val PeerDoneSurface = Color(0xFFFAFAFA)
+val PeerDoneSurfaceLow = Color(0xFFF5F5F5)
+val PeerDoneSurfaceLight = Color(0xFFF8F8F8)
 val PeerDoneScreenBg = Color(0xFFEEEEEE)
 
 // Primary colors
@@ -36,10 +36,10 @@ val PeerDoneGrayMedium = Color(0xFFABABAB)
 val PeerDoneInputFieldSolid = Color(0xFFE3E3E3)
 
 // Chat specific
-val PeerDoneSentBubble = Color(0xFFCCC7E9)
-val PeerDoneReceivedBubble = Color(0xFFE5E5E5)
-val PeerDoneChatHeader = Color(0xFFDDDDDD)
-val PeerDoneInputField = Color(0x4DA6A6A6)
+val PeerDoneSentBubble = Color(0xFFE8E6F5)
+val PeerDoneReceivedBubble = Color(0xFFF0F0F0)
+val PeerDoneChatHeader = Color(0xFFF5F5F5)
+val PeerDoneInputField = Color(0x33999999)
 
 // Stop button
 val PeerDoneStopButton = Color(0xFFFFC4C4)

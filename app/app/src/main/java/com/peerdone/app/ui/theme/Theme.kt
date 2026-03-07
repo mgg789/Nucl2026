@@ -20,9 +20,9 @@ private val DarkColorScheme = darkColorScheme(
     tertiary = PeerDoneOnline,
     onTertiary = PeerDoneWhite,
     background = PeerDoneBackground,
-    onBackground = PeerDoneWhite,
+    onBackground = PeerDoneTextDark,
     surface = PeerDoneSurface,
-    onSurface = PeerDoneWhite,
+    onSurface = PeerDoneTextDark,
     surfaceVariant = PeerDoneSurfaceLow,
     onSurfaceVariant = PeerDoneGray,
     surfaceContainer = PeerDoneSurface,
@@ -60,7 +60,7 @@ private val LightColorScheme = lightColorScheme(
 
 @Composable
 fun PeerDoneTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = false,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
