@@ -112,6 +112,7 @@ class NearbyMeshClient(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val signer = DeviceKeyStoreSigner()
     private val queueStore = MessageQueueStore(appContext)
+    private val pendingForPeerStore = PendingForPeerStore(appContext)
     private val identityTrustStore = IdentityTrustStore(appContext)
     private val incomingFileStore = IncomingFileStore(appContext)
     val chatHistoryStore = ChatHistoryStore(appContext)
@@ -208,6 +209,41 @@ class NearbyMeshClient(
     private fun syncConnected() {
         _connectedEndpoints.value = connected.toList()
         syncConnectedPeerInfos()
+        flushPendingForConnectedPeers()
+    }
+
+    private fun flushPendingForConnectedPeers() {
+        val identity = localIdentity ?: return
+        connected.forEach { endpointId ->
+            val raw = peerNamesByEndpoint[endpointId] ?: return@forEach
+            val normPeer = raw.split("|").firstOrNull()?.trim() ?: return@forEach
+            val epId = peerNamesByEndpoint.entries.find { it.value == normPeer || it.value.startsWith("$normPeer|") }?.key ?: return@forEach
+            val pending = pendingForPeerStore.getForPeer(normPeer)
+            pending.forEach { item ->
+                runCatching {
+                    val content = ContentCodec.decode(item.contentJson) ?: return@runCatching
+                    if (content !is OutboundContent.Text) return@runCatching
+                    val policy = AccessPolicy.fromJson(JSONObject(item.policyJson))
+                    val envelope = buildChatEnvelope(identity, item.contentJson, policy, item.ttl, recipientUserId = normPeer) ?: return@runCatching
+                    val signed = signEnvelope(envelope)
+                    val sent = sendToTargets(listOf(epId), signed)
+                    if (sent > 0) {
+                        pendingForPeerStore.remove(item.id)
+                        chatHistoryStore.replaceMessageId(normPeer, item.id, signed.id)
+                        queueStore.upsertQueued(signed.id, item.previewText, signed.toJsonBytes().size.toLong())
+                        queueStore.markSent(signed.id)
+                        seenMessageIds.add(signed.id)
+                        pendingAcks[signed.id] = PendingAck(envelope = signed)
+                        sentCount++
+                        pendingSentAtMs[signed.id] = System.currentTimeMillis()
+                        scheduleRetry(signed.id)
+                        syncStats()
+                        syncDeliveryMetrics()
+                        log("Flushed pending ${item.id.take(8)} -> $normPeer")
+                    }
+                }.onFailure { log("Flush pending failed: ${it.message}") }
+            }
+        }
     }
 
     private fun syncConnectedPeerInfos() {
@@ -849,14 +885,42 @@ class NearbyMeshClient(
 
     /**
      * Личная отправка в чат: указываем получателя в конверте и шифруем только для него; TTL обычный (mesh).
+     * Если пир офлайн — сохраняем в чат и в очередь; отправим при восстановлении соединения.
      */
     fun sendChatToPeer(peerUserId: String, sender: LocalIdentity, content: OutboundContent, policy: AccessPolicy, ttl: Int): Int {
         val normPeer = peerUserId.substringBefore("|").trim()
         val endpointId = peerNamesByEndpoint.entries.find { it.value == normPeer || it.value.startsWith("$normPeer|") }?.key
-            ?: run {
-                log("sendChatToPeer: no endpoint for peer $normPeer")
-                return 0
+
+        if (endpointId == null) {
+            if (content is OutboundContent.Text) {
+                val encoded = ContentCodec.encode(content)
+                val envelope = buildChatEnvelope(sender, encoded, policy, ttl, recipientUserId = normPeer) ?: return 0
+                val signed = signEnvelope(envelope)
+                val previewText = content.text
+                val pendingId = signed.id
+                chatHistoryStore.addMessage(normPeer, StoredChatMessage(
+                    id = pendingId,
+                    text = previewText,
+                    timestampMs = signed.timestampMs,
+                    isOutgoing = true,
+                    type = StoredMessageType.TEXT,
+                ))
+                pendingForPeerStore.add(PendingForPeerItem(
+                    id = pendingId,
+                    peerId = normPeer,
+                    contentJson = encoded,
+                    policyJson = policy.toJson().toString(),
+                    ttl = ttl,
+                    previewText = previewText,
+                ))
+                queueStore.upsertQueued(pendingId, previewText, signed.toJsonBytes().size.toLong())
+                log("sendChatToPeer: peer $normPeer offline, queued for later")
+            } else {
+                log("sendChatToPeer: no endpoint for peer $normPeer (non-text content not queued)")
             }
+            return 0
+        }
+
         val encoded = ContentCodec.encode(content)
         val envelope = buildChatEnvelope(sender, encoded, policy, ttl, recipientUserId = normPeer) ?: return 0
         val previewText = when (content) {

@@ -94,6 +94,18 @@ class ChatHistoryStore(context: Context) {
         persist(updated)
     }
 
+    fun replaceMessageId(peerId: String, oldId: String, newId: String) {
+        val norm = peerId.substringBefore("|").trim()
+        val list = _byPeer.value[norm].orEmpty()
+        val updatedList = list.map { if (it.id == oldId) it.copy(id = newId) else it }
+        if (updatedList != list) {
+            val updated = _byPeer.value.toMutableMap()
+            updated[norm] = updatedList
+            _byPeer.value = updated
+            persist(updated)
+        }
+    }
+
     fun clearPeer(peerId: String) {
         val norm = peerId.substringBefore("|").trim()
         val updated = _byPeer.value.toMutableMap()
