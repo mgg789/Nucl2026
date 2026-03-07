@@ -1,7 +1,12 @@
 package com.peerdone.app.data
 
+import android.os.Build
 import android.util.Log
 import com.peerdone.app.core.message.ContentCodec
+import java.io.File
+import java.security.MessageDigest
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 import com.peerdone.app.core.message.HistoryResponseItem
 import com.peerdone.app.core.message.OutboundContent
 import com.peerdone.app.core.transport.TransportHealth
@@ -81,6 +86,21 @@ class LanMeshClient(
     private val pendingSentAtMs = ConcurrentHashMap<String, Long>()
     private var dropAcksForDemo = false
     private var forwardingEnabled = true
+
+    private data class IncomingFileState(
+        val meta: OutboundContent.FileMeta? = null,
+        val chunks: MutableMap<Int, ByteArray> = mutableMapOf(),
+        var chunkTotal: Int? = null,
+    )
+
+    private data class CompletedFileInfo(
+        val fileName: String,
+        val path: String,
+        val mimeType: String?,
+    )
+
+    private val incomingFiles = ConcurrentHashMap<String, IncomingFileState>()
+    private val completedReceivedFiles = ConcurrentHashMap<String, CompletedFileInfo>()
 
     private data class LanPeer(
         val host: String,
@@ -251,14 +271,16 @@ class LanMeshClient(
 
     private fun sendHello() {
         val identity = localIdentity ?: return
-        val nickname = (currentDisplayName?.trim()?.take(30))?.ifBlank { null } ?: identity.userId
+        val deviceModel = listOf(Build.MANUFACTURER, Build.MODEL).filter { it.isNotBlank() }.joinToString(" ").trim().take(40)
+        val nickname = (currentDisplayName?.trim()?.take(30))?.takeIf { it.isNotBlank() }
+            ?: deviceModel.ifBlank { "Android" }
         val payload = JSONObject().apply {
             put("type", "hello")
             put("userId", identity.userId)
             put("orgId", identity.orgId)
             put("level", identity.level)
             put("nickname", nickname)
-            put("device", "Android")
+            put("device", deviceModel.ifBlank { "Android" })
             put("tcpPort", TCP_PORT)
             put("timestampMs", System.currentTimeMillis())
         }
@@ -334,6 +356,66 @@ class LanMeshClient(
         } finally {
             try { client.close() } catch (_: Exception) {}
         }
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    private fun buildIncomingSummary(content: OutboundContent?, senderUserId: String): String? {
+        if (content == null) return null
+        return when (content) {
+            is OutboundContent.FileMeta -> {
+                val old = incomingFiles[content.fileId]
+                incomingFiles[content.fileId] = (old ?: IncomingFileState()).copy(meta = content)
+                "FILE ${content.fileName}: метаданные получены"
+            }
+            is OutboundContent.FileChunk -> {
+                val bytes = runCatching { Base64.decode(content.chunkBase64) }.getOrNull()
+                    ?: return "FILE_CHUNK ${content.fileId}: decode error"
+                val prev = incomingFiles[content.fileId] ?: IncomingFileState()
+                if (content.chunkIndex !in prev.chunks) {
+                    prev.chunks[content.chunkIndex] = bytes
+                    prev.chunkTotal = content.chunkTotal
+                    incomingFiles[content.fileId] = prev
+                }
+                val state = incomingFiles[content.fileId] ?: return null
+                val got = state.chunks.size
+                val total = state.chunkTotal ?: content.chunkTotal
+                if (got >= total && total > 0) {
+                    val assembled = ByteArray(state.chunks.values.sumOf { it.size })
+                    var offset = 0
+                    state.chunks.toSortedMap().values.forEach { chunk ->
+                        chunk.copyInto(assembled, destinationOffset = offset)
+                        offset += chunk.size
+                    }
+                    val hash = sha256Hex(assembled)
+                    val fileName = state.meta?.fileName ?: "unknown.bin"
+                    val valid = state.meta?.sha256?.equals(hash, ignoreCase = true) ?: false
+                    incomingFiles.remove(content.fileId)
+                    if (valid) {
+                        val receivedDir = File(appContext.filesDir, "received").apply { mkdirs() }
+                        val safeName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                        val savedFile = File(receivedDir, "${content.fileId}_$safeName")
+                        savedFile.writeBytes(assembled)
+                        completedReceivedFiles[content.fileId] = CompletedFileInfo(
+                            fileName = fileName,
+                            path = savedFile.absolutePath,
+                            mimeType = state.meta?.mimeType,
+                        )
+                        "FILE $fileName: получен (${assembled.size} bytes)"
+                    } else {
+                        "FILE $fileName: ошибка целостности"
+                    }
+                } else {
+                    val fileName = state.meta?.fileName ?: "file-${content.fileId.take(6)}"
+                    "FILE $fileName: $got/$total chunks"
+                }
+            }
+            else -> null
+        }
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { b -> "%02x".format(b) }
     }
 
     private fun handleEnvelope(fromEndpointId: String, envelope: MeshEnvelope) {
@@ -441,31 +523,66 @@ class LanMeshClient(
                     return
                 }
 
-                val summary = when (content) {
-                    is OutboundContent.Text -> content.text.take(80)
-                    is OutboundContent.FileMeta -> "Файл: ${content.fileName}"
-                    is OutboundContent.FileChunk -> "Чанк файла"
-                    is OutboundContent.VoiceNoteMeta -> "Голосовое сообщение"
-                    is OutboundContent.VideoNoteMeta -> "Видео"
-                    else -> "[${content?.kind?.name ?: "?"}]"
+                // Сборка файлов: FileMeta + FileChunk -> полный файл в completedReceivedFiles
+                val enrichedSummary = if (content is OutboundContent.FileMeta || content is OutboundContent.FileChunk) {
+                    buildIncomingSummary(content, envelope.senderUserId)
+                } else null
+                val completedFile = (content as? OutboundContent.FileChunk)?.let { chunk ->
+                    completedReceivedFiles[chunk.fileId]
                 }
-                val msg = ReceivedMeshMessage(
-                    fromEndpointId, envelope, plainText, canRead && plainText != null,
-                    content?.kind, summary,
-                )
-                _incomingMessages.value = (_incomingMessages.value + msg).takeLast(500)
-                if (canRead && plainText != null && content != null) {
-                    val senderPeerId = envelope.senderUserId.substringBefore("|").trim()
+                val receivedFilePath = completedFile?.path
+                val receivedFileName = completedFile?.fileName
+                val receivedFileMimeType = completedFile?.mimeType
+
+                val shouldAddToChat = content !is OutboundContent.FileMeta &&
+                    content !is OutboundContent.FileRepairRequest &&
+                    (content !is OutboundContent.FileChunk || receivedFilePath != null)
+
+                val summary = when {
+                    receivedFilePath != null && receivedFileMimeType?.startsWith("audio/") == true -> "Голосовое сообщение"
+                    receivedFilePath != null && receivedFileMimeType?.startsWith("video/") == true -> "Видео"
+                    receivedFileName != null -> receivedFileName
+                    content is OutboundContent.Text -> content.text.take(80)
+                    content is OutboundContent.VoiceNoteMeta -> "Голосовое сообщение"
+                    content is OutboundContent.VideoNoteMeta -> "Видео"
+                    else -> enrichedSummary ?: "[${content?.kind?.name ?: "?"}]"
+                }
+                val senderPeerId = envelope.senderUserId.substringBefore("|").trim()
+                fun norm(s: String) = s.substringBefore("|").trim()
+                val isFileOrVoiceCompletion = receivedFilePath != null
+                val alreadyHaveSameFile = isFileOrVoiceCompletion && _incomingMessages.value.any {
+                    norm(it.envelope.senderUserId) == norm(envelope.senderUserId) && it.receivedFilePath == receivedFilePath
+                }
+
+                if (shouldAddToChat && !alreadyHaveSameFile && canRead && plainText != null) {
+                    val isAudio = receivedFilePath != null && receivedFileMimeType?.startsWith("audio/") == true
+                    val isVideo = receivedFilePath != null && receivedFileMimeType?.startsWith("video/") == true
+                    val isFile = receivedFileName != null && !isAudio && !isVideo
+                    val storedType = when {
+                        isAudio -> StoredMessageType.VOICE
+                        isVideo -> StoredMessageType.VIDEO_NOTE
+                        isFile -> StoredMessageType.FILE
+                        else -> StoredMessageType.TEXT
+                    }
                     chatHistoryStore.addMessage(senderPeerId, StoredChatMessage(
                         id = envelope.id,
                         text = summary,
                         timestampMs = envelope.timestampMs,
                         isOutgoing = false,
-                        type = StoredMessageType.TEXT,
-                        fileName = null,
-                        filePath = null,
-                        voiceFileId = null,
+                        type = storedType,
+                        fileName = receivedFileName,
+                        filePath = receivedFilePath,
+                        voiceFileId = if (isAudio) envelope.id else null,
                     ))
+                    _incomingMessages.value = (_incomingMessages.value + ReceivedMeshMessage(
+                        fromEndpointId, envelope, plainText, true,
+                        content?.kind, summary,
+                        receivedFilePath = receivedFilePath,
+                        receivedFileName = receivedFileName,
+                        receivedFileMimeType = receivedFileMimeType,
+                    )).takeLast(500)
+                } else if (!shouldAddToChat && enrichedSummary != null) {
+                    log("FILE: $enrichedSummary")
                 }
                 if (!dropAcksForDemo) sendAck(fromEndpointId, envelope.id)
                 if (envelope.ttl > 0) forward(envelope, fromEndpointId)
@@ -595,6 +712,8 @@ class LanMeshClient(
         seenMessageIds.clear()
         pendingAcks.clear()
         envelopeIdToReceivedFrom.clear()
+        incomingFiles.clear()
+        completedReceivedFiles.clear()
         knownNodes.clear()
         knownEdges.clear()
         _isRunning.value = false
@@ -652,6 +771,19 @@ class LanMeshClient(
         pendingAcks[signed.id] = PendingAck(envelope = signed)
         pendingSentAtMs[signed.id] = System.currentTimeMillis()
         sentCount++
+        // Чтобы отправленное сообщение отображалось в чате у отправителя
+        targets.forEach { peerId ->
+            chatHistoryStore.addMessage(peerId, StoredChatMessage(
+                id = signed.id,
+                text = previewText,
+                timestampMs = signed.timestampMs,
+                isOutgoing = true,
+                type = StoredMessageType.TEXT,
+                fileName = null,
+                filePath = null,
+                voiceFileId = null,
+            ))
+        }
         syncStats()
         syncDeliveryMetrics()
         scope.launch {
@@ -688,6 +820,8 @@ class LanMeshClient(
         val previewText = when (content) {
             is OutboundContent.Text -> content.text
             is OutboundContent.FileMeta -> "Файл: ${content.fileName}"
+            is OutboundContent.VoiceNoteMeta -> "Голосовое сообщение"
+            is OutboundContent.VideoNoteMeta -> "Видео"
             else -> "[${content.kind}]"
         }
         val signed = signEnvelope(envelope)
@@ -698,6 +832,23 @@ class LanMeshClient(
         pendingAcks[signed.id] = PendingAck(envelope = signed)
         pendingSentAtMs[signed.id] = System.currentTimeMillis()
         sentCount++
+        val storedType = when (content) {
+            is OutboundContent.Text -> StoredMessageType.TEXT
+            is OutboundContent.FileMeta -> StoredMessageType.FILE
+            is OutboundContent.VoiceNoteMeta -> StoredMessageType.VOICE
+            is OutboundContent.VideoNoteMeta -> StoredMessageType.VIDEO_NOTE
+            else -> StoredMessageType.TEXT
+        }
+        chatHistoryStore.addMessage(normPeer, StoredChatMessage(
+            id = signed.id,
+            text = previewText,
+            timestampMs = signed.timestampMs,
+            isOutgoing = true,
+            type = storedType,
+            fileName = (content as? OutboundContent.FileMeta)?.fileName,
+            filePath = null,
+            voiceFileId = null,
+        ))
         syncStats()
         syncDeliveryMetrics()
         scope.launch {
