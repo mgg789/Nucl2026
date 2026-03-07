@@ -21,12 +21,16 @@ class NearbyTransportAdapter(
         content: OutboundContent,
         policy: AccessPolicy,
         deliveryClass: DeliveryClass,
+        targetPeerId: String?,
     ): Boolean {
         nearby.rememberSentContent(content)
         val ttl = when (deliveryClass) {
             DeliveryClass.REALTIME -> 2
             DeliveryClass.INTERACTIVE -> 3
             DeliveryClass.BULK -> 4
+        }
+        if (targetPeerId != null) {
+            return nearby.sendChatToPeer(targetPeerId, sender, content, policy, ttl) > 0
         }
         val env = nearby.buildChatEnvelope(
             sender = sender,

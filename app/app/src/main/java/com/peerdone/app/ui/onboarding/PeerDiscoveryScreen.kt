@@ -76,7 +76,7 @@ fun PeerDiscoveryScreen(
     val addedPeers = remember { mutableStateListOf<String>() }
 
     DisposableEffect(Unit) {
-        nearbyClient.start(localIdentity)
+        nearbyClient.start(localIdentity, null)
         onDispose { nearbyClient.stop() }
     }
 
@@ -185,7 +185,7 @@ fun PeerDiscoveryScreen(
                         nearbyClient.stop()
                         isSearching = false
                     } else {
-                        nearbyClient.start(localIdentity)
+                        nearbyClient.start(localIdentity, null)
                         isSearching = true
                     }
                 },

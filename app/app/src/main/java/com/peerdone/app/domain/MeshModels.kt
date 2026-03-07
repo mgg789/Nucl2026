@@ -23,6 +23,8 @@ data class MeshEnvelope(
     val senderLevel: Int,
     val senderPublicKeyBase64: String,
     val keyId: String,
+    /** Кому адресовано: null = broadcast (все могут читать по policy), иначе только этот пир расшифровывает и показывает. */
+    val recipientUserId: String? = null,
     val timestampMs: Long = System.currentTimeMillis(),
     val ttl: Int = 3,
     val hopCount: Int = 0,
@@ -41,6 +43,7 @@ data class MeshEnvelope(
             .put("senderLevel", senderLevel)
             .put("senderPublicKeyBase64", senderPublicKeyBase64)
             .put("keyId", keyId)
+            .put("recipientUserId", recipientUserId ?: "")
             .put("timestampMs", timestampMs)
             .put("ttl", ttl)
             .put("hopCount", hopCount)
@@ -69,6 +72,8 @@ data class MeshEnvelope(
         append('|')
         append(keyId)
         append('|')
+        append(recipientUserId.orEmpty())
+        append('|')
         append(timestampMs)
         append('|')
         append(ivBase64)
@@ -96,6 +101,7 @@ data class MeshEnvelope(
                 senderLevel = json.getInt("senderLevel"),
                 senderPublicKeyBase64 = json.getString("senderPublicKeyBase64"),
                 keyId = json.getString("keyId"),
+                recipientUserId = json.optString("recipientUserId").ifBlank { null },
                 timestampMs = json.getLong("timestampMs"),
                 ttl = json.optInt("ttl", 3),
                 hopCount = json.optInt("hopCount", 0),
@@ -114,6 +120,7 @@ data class MeshEnvelope(
             messageText: String,
             policy: AccessPolicy,
             ttl: Int = 3,
+            recipientUserId: String? = null,
         ): MeshEnvelope {
             val encrypted = MeshCrypto.encryptWithKey(messageText, keyBytes)
             return MeshEnvelope(
@@ -123,6 +130,7 @@ data class MeshEnvelope(
                 senderLevel = sender.level,
                 senderPublicKeyBase64 = senderPublicKeyBase64,
                 keyId = keyId,
+                recipientUserId = recipientUserId,
                 ttl = ttl,
                 hopCount = 0,
                 ivBase64 = encrypted.ivBase64,

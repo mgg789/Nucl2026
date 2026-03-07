@@ -83,15 +83,19 @@ fun ChatListScreen(
 
     var selectedFilter by remember { mutableStateOf(ChatFilter.CHATS) }
 
-    val onlinePeers = remember(topology) { topology.nodes.toSet() }
+    fun normalizePeerId(s: String): String = s.substringBefore("|").trim()
+    val localUserId = normalizePeerId(localIdentity.userId)
+    val onlinePeers = remember(topology) {
+        topology.nodes.map { normalizePeerId(it) }.toSet()
+    }
     val chatPreviews = remember(incoming, topology, localIdentity) {
-        val peers = (incoming.map { it.envelope.senderUserId } + topology.nodes)
-            .filter { it.isNotBlank() && it != localIdentity.userId }
+        val peers = (incoming.map { normalizePeerId(it.envelope.senderUserId) } + topology.nodes.map { normalizePeerId(it) })
+            .filter { it.isNotBlank() && it != localUserId }
             .distinct()
             .sorted()
 
         peers.map { peerId ->
-            val peerMessages = incoming.filter { it.envelope.senderUserId == peerId }
+            val peerMessages = incoming.filter { normalizePeerId(it.envelope.senderUserId) == peerId }
             val lastMsg = peerMessages.lastOrNull()
             ChatPreviewItem(
                 peerId = peerId,

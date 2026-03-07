@@ -90,7 +90,8 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 enum class ChatMessageType {
     TEXT,
     VOICE,
-    FILE
+    FILE,
+    VIDEO_NOTE
 }
 
 private data class ChatMessage(
@@ -165,6 +166,8 @@ fun ChatScreen(
         SendOrchestrator(adaptersByType, transportRegistry)
     }
 
+    val targetPeerId = remember(peerId) { peerId.substringBefore("|").trim() }
+
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
@@ -182,31 +185,77 @@ fun ChatScreen(
                 mimeType = mimeType,
                 bytes = bytes,
                 policy = AccessPolicy(),
+                targetPeerId = targetPeerId,
             )
+            val isVideo = mimeType.startsWith("video/")
             localMessages += ChatMessage(
                 id = "local_file_${System.currentTimeMillis()}",
-                text = "Файл: $fileName (отправлен)",
+                text = if (isVideo) "Видео" else "Файл: $fileName (отправлен)",
                 timestampMs = System.currentTimeMillis(),
                 isOutgoing = true,
-                type = ChatMessageType.FILE,
+                type = if (isVideo) ChatMessageType.VIDEO_NOTE else ChatMessageType.FILE,
+                fileName = fileName
+            )
+        } catch (_: Exception) {}
+    }
+
+    val videoNotePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        try {
+            val fileName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (cursor.moveToFirst() && nameIndex >= 0) cursor.getString(nameIndex) else null
+            } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "video.mp4"
+            val mimeType = context.contentResolver.getType(uri) ?: "video/mp4"
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@rememberLauncherForActivityResult
+            sendOrchestrator.enqueueFileTransfer(
+                sender = localIdentity,
+                fileName = fileName,
+                mimeType = mimeType,
+                bytes = bytes,
+                policy = AccessPolicy(),
+                targetPeerId = targetPeerId,
+            )
+            localMessages += ChatMessage(
+                id = "local_videonote_${System.currentTimeMillis()}",
+                text = "Видео",
+                timestampMs = System.currentTimeMillis(),
+                isOutgoing = true,
+                type = ChatMessageType.VIDEO_NOTE,
                 fileName = fileName
             )
         } catch (_: Exception) {}
     }
 
     val remoteMessages = remember(incoming, peerId) {
+        val normalizedPeerId = peerId.substringBefore("|").trim()
         incoming
-            .filter { it.envelope.senderUserId == peerId }
+            .filter {
+                val sender = it.envelope.senderUserId.substringBefore("|").trim()
+                sender == normalizedPeerId
+            }
             .map { msg ->
-                val isFileWithPath = msg.receivedFilePath != null && msg.receivedFileName != null
+                val isAudio = msg.receivedFileMimeType?.startsWith("audio/") == true && msg.receivedFilePath != null
+                val isVideo = msg.receivedFileMimeType?.startsWith("video/") == true && msg.receivedFilePath != null
+                val isFileWithPath = msg.receivedFilePath != null && msg.receivedFileName != null && !isAudio && !isVideo
+                val type = when {
+                    isAudio -> ChatMessageType.VOICE
+                    isVideo -> ChatMessageType.VIDEO_NOTE
+                    isFileWithPath -> ChatMessageType.FILE
+                    else -> ChatMessageType.TEXT
+                }
                 ChatMessage(
                     id = msg.envelope.id,
-                    text = msg.contentSummary,
+                    text = if (type == ChatMessageType.VOICE) "Голосовое сообщение" else msg.contentSummary,
                     timestampMs = msg.envelope.timestampMs,
                     isOutgoing = false,
-                    type = if (isFileWithPath) ChatMessageType.FILE else ChatMessageType.TEXT,
+                    type = type,
                     fileName = msg.receivedFileName,
-                    filePath = msg.receivedFilePath
+                    filePath = msg.receivedFilePath,
+                    voiceFileId = if (isAudio) msg.envelope.id else null,
+                    voiceFile = if (isAudio) msg.receivedFilePath?.let { File(it) } else null,
                 )
             }
     }
@@ -267,11 +316,12 @@ fun ChatScreen(
                         isOutgoing = message.isOutgoing,
                         isPlaying = playingFileId == message.voiceFileId && playbackState == PlaybackState.PLAYING,
                         onPlayPause = {
-                            message.voiceFile?.let { file ->
+                            val file = message.voiceFile ?: message.filePath?.let { File(it) }
+                            if (file != null) {
                                 if (playingFileId == message.voiceFileId && playbackState == PlaybackState.PLAYING) {
                                     voicePlayer.pause()
                                 } else {
-                                    voicePlayer.play(file, message.voiceFileId ?: "")
+                                    voicePlayer.play(file, message.voiceFileId ?: message.id)
                                 }
                             }
                         }
@@ -282,6 +332,14 @@ fun ChatScreen(
                         isOutgoing = message.isOutgoing,
                         filePath = message.filePath,
                         onOpenFile = { path ->
+                            path?.let { openFileWithExternalApp(context, it, message.fileName) }
+                        }
+                    )
+                    ChatMessageType.VIDEO_NOTE -> VideoNoteBubble(
+                        timestamp = message.timestampMs.toTimeString(),
+                        isOutgoing = message.isOutgoing,
+                        filePath = message.filePath,
+                        onPlay = { path ->
                             path?.let { openFileWithExternalApp(context, it, message.fileName) }
                         }
                     )
@@ -309,20 +367,15 @@ fun ChatScreen(
                     
                     if (result != null) {
                         val fileBytes = result.file.readBytes()
-                        val base64 = Base64.encode(fileBytes)
-                        
                         val policy = AccessPolicy()
-                        sendOrchestrator.enqueueAndTrySend(
+                        sendOrchestrator.enqueueFileTransfer(
                             sender = localIdentity,
-                            content = OutboundContent.VoiceNoteMeta(
-                                fileId = result.fileId,
-                                durationMs = result.durationMs,
-                                codec = result.codec
-                            ),
+                            fileName = "voice.m4a",
+                            mimeType = "audio/mp4",
+                            bytes = fileBytes,
                             policy = policy,
-                            deliveryClass = DeliveryClass.INTERACTIVE,
+                            targetPeerId = targetPeerId,
                         )
-                        
                         localMessages += ChatMessage(
                             id = "local_voice_${System.currentTimeMillis()}",
                             text = "Голосовое сообщение",
@@ -348,6 +401,7 @@ fun ChatScreen(
                             content = OutboundContent.Text(messageDraft),
                             policy = policy,
                             deliveryClass = DeliveryClass.INTERACTIVE,
+                            targetPeerId = targetPeerId,
                         )
                         localMessages += ChatMessage(
                             id = "local_${System.currentTimeMillis()}",
@@ -363,7 +417,8 @@ fun ChatScreen(
                         isRecordingVoice = true
                     }
                 },
-                onAttach = { filePickerLauncher.launch("*/*") }
+                onAttach = { filePickerLauncher.launch("*/*") },
+                onVideoNote = { videoNotePickerLauncher.launch("video/*") }
             )
         }
     }
@@ -660,6 +715,42 @@ private fun VoiceMessageBubble(
 }
 
 @Composable
+private fun VideoNoteBubble(
+    timestamp: String,
+    isOutgoing: Boolean,
+    filePath: String?,
+    onPlay: (String?) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = if (isOutgoing) Alignment.End else Alignment.Start
+    ) {
+        Box(
+            modifier = Modifier
+                .size(120.dp)
+                .clip(CircleShape)
+                .background(PeerDoneDarkGray)
+                .clickable(enabled = filePath != null) { onPlay(filePath) },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                painter = painterResource(id = R.drawable.ic_play),
+                contentDescription = "Play",
+                modifier = Modifier.size(40.dp),
+                tint = PeerDoneWhite
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = timestamp,
+            fontSize = 11.sp,
+            color = PeerDoneGray
+        )
+    }
+}
+
+@Composable
 private fun VoiceRecordingBar(
     durationMs: Long,
     onCancel: () -> Unit,
@@ -749,6 +840,7 @@ private fun ChatInputBar(
     onSend: () -> Unit,
     onMicClick: () -> Unit,
     onAttach: () -> Unit,
+    onVideoNote: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -772,7 +864,25 @@ private fun ChatInputBar(
             ) {
                 Icon(
                     painter = painterResource(id = R.drawable.ic_plus),
-                    contentDescription = "Attach",
+                    contentDescription = "Прикрепить файл",
+                    modifier = Modifier.size(24.dp),
+                    tint = PeerDoneWhite
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(PeerDonePrimaryVariant)
+                    .clickable(onClick = onVideoNote),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_videocam),
+                    contentDescription = "Видеокружок",
                     modifier = Modifier.size(24.dp),
                     tint = PeerDoneWhite
                 )

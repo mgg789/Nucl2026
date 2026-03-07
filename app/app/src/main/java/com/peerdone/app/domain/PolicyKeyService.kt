@@ -11,6 +11,8 @@ import java.security.MessageDigest
  */
 object PolicyKeyService {
     private const val MAX_LEVEL = 10
+    private const val RECIPIENT_KEY_PREFIX = "recipient:"
+    private const val RECIPIENT_MASTER = "peerdone-direct-msg-v1"
 
     private val orgMasters: Map<String, String> = mapOf(
         "org_city" to "master-city-v1-3bc9c42f",
@@ -25,7 +27,21 @@ object PolicyKeyService {
         return keyId to deriveKey(keyId)
     }
 
+    /** Ключ только для получателя: расшифровать может только peer с userId == recipientUserId. */
+    fun buildSendKeyForRecipient(recipientUserId: String): Pair<String, ByteArray> {
+        val norm = recipientUserId.substringBefore("|").trim()
+        val keyId = "$RECIPIENT_KEY_PREFIX$norm"
+        val keyBytes = MessageDigest.getInstance("SHA-256").digest("$RECIPIENT_MASTER|$norm".encodeToByteArray())
+        return keyId to keyBytes
+    }
+
     fun resolveReadKey(identity: LocalIdentity, keyId: String): ByteArray? {
+        if (keyId.startsWith(RECIPIENT_KEY_PREFIX)) {
+            val recipientId = keyId.removePrefix(RECIPIENT_KEY_PREFIX).substringBefore("|").trim()
+            val myId = identity.userId.substringBefore("|").trim()
+            if (recipientId != myId) return null
+            return MessageDigest.getInstance("SHA-256").digest("$RECIPIENT_MASTER|$myId".encodeToByteArray())
+        }
         if (!isKeyAllowedForIdentity(identity, keyId)) return null
         return deriveKey(keyId)
     }

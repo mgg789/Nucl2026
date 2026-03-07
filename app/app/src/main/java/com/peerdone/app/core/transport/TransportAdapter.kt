@@ -10,13 +10,14 @@ interface TransportAdapter {
 
     /**
      * Возвращает true при успешной отправке.
-     * Конкретный адаптер сам решает формат/протокол отправки.
+     * targetPeerId: если задан, сообщение отправляется только этому пиру (личная переписка).
      */
     fun send(
         sender: LocalIdentity,
         content: OutboundContent,
         policy: AccessPolicy,
         deliveryClass: DeliveryClass,
+        targetPeerId: String? = null,
     ): Boolean
 }
 
@@ -31,6 +32,7 @@ class StubTransportAdapter(
         content: OutboundContent,
         policy: AccessPolicy,
         deliveryClass: DeliveryClass,
+        targetPeerId: String?,
     ): Boolean = false
 }
 

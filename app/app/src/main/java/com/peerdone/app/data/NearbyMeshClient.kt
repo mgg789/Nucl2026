@@ -58,6 +58,7 @@ data class ReceivedMeshMessage(
     val contentSummary: String,
     val receivedFilePath: String? = null,
     val receivedFileName: String? = null,
+    val receivedFileMimeType: String? = null,
 )
 
 data class MeshStats(
@@ -141,9 +142,11 @@ class NearbyMeshClient(
     private val sentFileMeta = ConcurrentHashMap<String, OutboundContent.FileMeta>()
     private val repairRequestSentAtMs = ConcurrentHashMap<String, Long>()
     private val inboundRateWindowMs = 5_000L
-    private val inboundRateLimit = 40
+    /** Лимит входящих сообщений от одного отправителя за окно (остальные отбрасываются). */
+    private val inboundRateLimit = 15
     private val inboundSenderEvents = ConcurrentHashMap<String, MutableList<Long>>()
-    private val completedReceivedFiles = ConcurrentHashMap<String, Pair<String, String>>()
+    private data class CompletedFileInfo(val fileName: String, val path: String, val mimeType: String?)
+    private val completedReceivedFiles = ConcurrentHashMap<String, CompletedFileInfo>()
 
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
@@ -151,7 +154,7 @@ class NearbyMeshClient(
     private val _connectedEndpoints = MutableStateFlow<List<String>>(emptyList())
     val connectedEndpoints: StateFlow<List<String>> = _connectedEndpoints.asStateFlow()
 
-    data class PeerInfo(val endpointId: String, val userId: String, val deviceModel: String)
+    data class PeerInfo(val endpointId: String, val userId: String, val deviceModel: String, val displayName: String = "")
     private val _connectedPeerInfos = MutableStateFlow<List<PeerInfo>>(emptyList())
     val connectedPeerInfos: StateFlow<List<PeerInfo>> = _connectedPeerInfos.asStateFlow()
 
@@ -160,6 +163,10 @@ class NearbyMeshClient(
 
     private val _incomingMessages = MutableStateFlow<List<ReceivedMeshMessage>>(emptyList())
     val incomingMessages: StateFlow<List<ReceivedMeshMessage>> = _incomingMessages.asStateFlow()
+
+    /** Realtime messages (call signals, audio packets) — not rate-limited, not shown in chat. */
+    private val _realtimeMessages = MutableStateFlow<List<ReceivedMeshMessage>>(emptyList())
+    val realtimeMessages: StateFlow<List<ReceivedMeshMessage>> = _realtimeMessages.asStateFlow()
 
     private val _stats = MutableStateFlow(MeshStats())
     val stats: StateFlow<MeshStats> = _stats.asStateFlow()
@@ -201,13 +208,11 @@ class NearbyMeshClient(
     private fun syncConnectedPeerInfos() {
         val list = connected.toList().map { endpointId ->
             val raw = peerNamesByEndpoint[endpointId] ?: endpointId
-            val (uid, model) = if (raw.contains("|")) {
-                val i = raw.indexOf("|")
-                raw.substring(0, i) to raw.substring(i + 1).take(50)
-            } else {
-                raw to ""
-            }
-            PeerInfo(endpointId, uid, model)
+            val parts = raw.split("|")
+            val uid = parts.getOrNull(0)?.trim() ?: raw
+            val model = parts.getOrNull(1)?.take(50) ?: ""
+            val displayName = parts.getOrNull(2)?.take(30)?.trim() ?: ""
+            PeerInfo(endpointId, uid, model, displayName)
         }
         _connectedPeerInfos.value = list
     }
@@ -372,10 +377,6 @@ class NearbyMeshClient(
             }
 
             MeshMessageType.CHAT -> {
-                if (isSenderRateLimited(envelope.senderUserId)) {
-                    log("Dropped ${envelope.id.take(8)}: rate limit for ${envelope.senderUserId}")
-                    return
-                }
                 if (!seenMessageIds.add(envelope.id)) {
                     droppedDuplicates++
                     syncStats()
@@ -384,9 +385,18 @@ class NearbyMeshClient(
                 trimSeenMessageIds()
                 syncStats()
 
+                val recipient = envelope.recipientUserId?.substringBefore("|")?.trim()
                 val identity = localIdentity
+                val iAmRecipient = recipient != null && identity != null && identity.userId.substringBefore("|").trim() == recipient
+                if (recipient != null && !iAmRecipient) {
+                    if (envelope.ttl > 0) forward(envelope, fromEndpointId)
+                    return
+                }
+
                 val canRead = if (identity == null) {
                     false
+                } else if (recipient != null) {
+                    iAmRecipient
                 } else {
                     PolicyEngine.matches(
                         user = UserDirectoryEntry(
@@ -415,24 +425,74 @@ class NearbyMeshClient(
                 }
 
                 val content = plainText?.let { ContentCodec.decode(it) }
-                if (content is OutboundContent.FileRepairRequest) {
-                    handleFileRepairRequest(content)
+
+                // Realtime (calls/audio): no rate limit, do not add to chat list
+                if (content is OutboundContent.CallSignal || content is OutboundContent.AudioPacket) {
+                    val msg = ReceivedMeshMessage(
+                        fromEndpointId = fromEndpointId,
+                        envelope = envelope,
+                        decryptedText = plainText,
+                        accessGranted = canRead && plainText != null,
+                        contentKind = content.kind,
+                        contentSummary = "",
+                    )
+                    _realtimeMessages.value = (_realtimeMessages.value + msg).takeLast(500)
+                    if (!dropAcksForDemo) sendAck(fromEndpointId, envelope.id)
+                    if (envelope.ttl > 0) forward(envelope, fromEndpointId)
+                    return
                 }
-                val enrichedSummary = buildIncomingSummary(content)
-                val (receivedFilePath, receivedFileName) = (content as? OutboundContent.FileChunk)?.let { chunk ->
-                    completedReceivedFiles[chunk.fileId]?.let { it.second to it.first } ?: (null to null)
-                } ?: (null to null)
-                _incomingMessages.value = (_incomingMessages.value + ReceivedMeshMessage(
-                    fromEndpointId = fromEndpointId,
-                    envelope = envelope,
-                    decryptedText = plainText,
-                    accessGranted = canRead && plainText != null,
-                    contentKind = content?.kind,
-                    contentSummary = enrichedSummary ?: plainText.toSummary(),
-                    receivedFilePath = receivedFilePath,
-                    receivedFileName = receivedFileName,
-                ))
-                    .takeLast(100)
+
+                // File transfer: do not rate-limit (иначе большие файлы не доходят)
+                val skipRateLimit = content is OutboundContent.FileMeta || content is OutboundContent.FileChunk
+                val rateLimitKey = envelope.senderUserId.substringBefore("|").trim()
+                if (!skipRateLimit && isSenderRateLimited(rateLimitKey)) {
+                    log("Dropped ${envelope.id.take(8)}: rate limit for $rateLimitKey")
+                    return
+                }
+
+                if (content is OutboundContent.FileRepairRequest) {
+                    handleFileRepairRequest(content, fromEndpointId)
+                    return
+                }
+                val enrichedSummary = buildIncomingSummary(content, envelope.senderUserId)
+                val completedFile = (content as? OutboundContent.FileChunk)?.let { chunk ->
+                    completedReceivedFiles[chunk.fileId]
+                }
+                val receivedFilePath = completedFile?.path
+                val receivedFileName = completedFile?.fileName
+                val receivedFileMimeType = completedFile?.mimeType
+
+                // Do not add FileMeta, FileRepairRequest or incomplete FileChunk to chat
+                val shouldAddToChat = content !is OutboundContent.FileMeta &&
+                    content !is OutboundContent.FileRepairRequest &&
+                    (content !is OutboundContent.FileChunk || receivedFilePath != null)
+
+                // Deduplicate: in mesh the same file can "complete" from multiple paths (different envelope.id)
+                fun norm(s: String) = s.substringBefore("|").trim()
+                val isFileOrVoiceCompletion = receivedFilePath != null
+                val alreadyHaveSameFile = isFileOrVoiceCompletion && _incomingMessages.value.any {
+                    norm(it.envelope.senderUserId) == norm(envelope.senderUserId) && it.receivedFilePath == receivedFilePath
+                }
+
+                if (shouldAddToChat && !alreadyHaveSameFile) {
+                    val displaySummary = when {
+                        receivedFilePath != null && receivedFileMimeType?.startsWith("audio/") == true -> "Голосовое сообщение"
+                        receivedFilePath != null && receivedFileMimeType?.startsWith("video/") == true -> "Видео"
+                        receivedFileName != null -> receivedFileName
+                        else -> enrichedSummary ?: plainText.toSummary()
+                    }
+                    _incomingMessages.value = (_incomingMessages.value + ReceivedMeshMessage(
+                        fromEndpointId = fromEndpointId,
+                        envelope = envelope,
+                        decryptedText = plainText,
+                        accessGranted = canRead && plainText != null,
+                        contentKind = content?.kind,
+                        contentSummary = displaySummary,
+                        receivedFilePath = receivedFilePath,
+                        receivedFileName = receivedFileName,
+                        receivedFileMimeType = receivedFileMimeType,
+                    )).takeLast(500)
+                }
                 val grant = canRead && plainText != null
                 log("RX ${envelope.id.take(8)} ${envelope.senderUserId} access=${if (grant) "granted" else "denied"}")
 
@@ -602,16 +662,16 @@ class NearbyMeshClient(
         }
     }
     
-    fun start(identity: LocalIdentity) {
+    fun start(identity: LocalIdentity, displayName: String? = null) {
         if (_isRunning.value) return
         localIdentity = identity
         signer.useIdentity(identity.userId)
         knownNodes += identity.userId
         publishTopology()
-        
+
         advertisingStarted = false
         discoveryStarted = false
-        
+
         val advertisingOptions = AdvertisingOptions.Builder()
             .setStrategy(strategy)
             .build()
@@ -619,7 +679,9 @@ class NearbyMeshClient(
             .setStrategy(strategy)
             .build()
 
-        currentEndpointName = "${identity.userId}|${Build.MODEL?.take(40) ?: "Android"}"
+        // Без pipe в имени, иначе ломается парсинг и лимиты протокола
+        val namePart = displayName?.take(30)?.trim()?.replace("|", "_")?.takeIf { it.isNotBlank() }
+        currentEndpointName = "${identity.userId}|${Build.MODEL?.take(40) ?: "Android"}${if (namePart != null) "|$namePart" else ""}"
         connectionsClient.startAdvertising(
             currentEndpointName!!,
             serviceId,
@@ -660,6 +722,7 @@ class NearbyMeshClient(
         connected.clear()
         peerNamesByEndpoint.clear()
         _connectedPeerInfos.value = emptyList()
+        _realtimeMessages.value = emptyList()
         syncConnected()
         _isRunning.value = false
         pendingAcks.clear()
@@ -689,6 +752,36 @@ class NearbyMeshClient(
         val envelope = buildChatEnvelope(sender, encoded, policy, ttl = 1) ?: return 0
         val signed = signEnvelope(envelope)
         return sendToTargets(listOf(endpointId), signed)
+    }
+
+    /**
+     * Личная отправка в чат: указываем получателя в конверте и шифруем только для него; TTL обычный (mesh).
+     */
+    fun sendChatToPeer(peerUserId: String, sender: LocalIdentity, content: OutboundContent, policy: AccessPolicy, ttl: Int): Int {
+        val normPeer = peerUserId.substringBefore("|").trim()
+        val endpointId = peerNamesByEndpoint.entries.find { it.value == normPeer || it.value.startsWith("$normPeer|") }?.key
+            ?: run {
+                log("sendChatToPeer: no endpoint for peer $normPeer")
+                return 0
+            }
+        val encoded = ContentCodec.encode(content)
+        val envelope = buildChatEnvelope(sender, encoded, policy, ttl, recipientUserId = normPeer) ?: return 0
+        val previewText = when (content) {
+            is OutboundContent.Text -> content.text
+            else -> "[${content.kind}]"
+        }
+        queueStore.upsertQueued(envelope.id, previewText)
+        val signed = signEnvelope(envelope)
+        val sent = sendToTargets(listOf(endpointId), signed)
+        queueStore.markSent(signed.id)
+        seenMessageIds.add(signed.id)
+        pendingAcks[signed.id] = PendingAck(envelope = signed)
+        sentCount++
+        pendingSentAtMs[signed.id] = System.currentTimeMillis()
+        syncStats()
+        syncDeliveryMetrics()
+        scheduleRetry(signed.id)
+        return sent
     }
 
     fun sendChat(envelope: MeshEnvelope, previewText: String): Int {
@@ -729,10 +822,14 @@ class NearbyMeshClient(
         messageText: String,
         policy: AccessPolicy,
         ttl: Int = 3,
+        recipientUserId: String? = null,
     ): MeshEnvelope? {
         signer.useIdentity(sender.userId)
-        val keySelection = PolicyKeyService.buildSendKey(sender, policy) ?: return null
-        val (keyId, keyBytes) = keySelection
+        val (keyId, keyBytes) = if (recipientUserId != null) {
+            PolicyKeyService.buildSendKeyForRecipient(recipientUserId)
+        } else {
+            PolicyKeyService.buildSendKey(sender, policy) ?: return null
+        }
         val draft = MeshEnvelope.createChat(
             sender = sender,
             senderPublicKeyBase64 = signer.publicKeyBase64(),
@@ -741,6 +838,7 @@ class NearbyMeshClient(
             messageText = messageText,
             policy = policy,
             ttl = ttl,
+            recipientUserId = recipientUserId,
         )
         return signEnvelope(draft)
     }
@@ -811,7 +909,7 @@ class NearbyMeshClient(
     }
 
     @OptIn(ExperimentalEncodingApi::class)
-    private fun buildIncomingSummary(content: OutboundContent?): String? {
+    private fun buildIncomingSummary(content: OutboundContent?, senderUserId: String): String? {
         return when (content) {
             is OutboundContent.FileMeta -> {
                 val old = incomingFiles[content.fileId]
@@ -849,14 +947,18 @@ class NearbyMeshClient(
                         val safeName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
                         val savedFile = File(receivedDir, "${content.fileId}_$safeName")
                         savedFile.writeBytes(assembled)
-                        completedReceivedFiles[content.fileId] = Pair(fileName, savedFile.absolutePath)
+                        completedReceivedFiles[content.fileId] = CompletedFileInfo(
+                            fileName = fileName,
+                            path = savedFile.absolutePath,
+                            mimeType = state.meta?.mimeType,
+                        )
                         "FILE $fileName: получен полностью, checksum ok (${assembled.size} bytes)"
                     } else {
                         "FILE $fileName: ошибка целостности (hash mismatch)"
                     }
                 } else {
                     val fileName = state.meta?.fileName ?: "file-${content.fileId.take(6)}"
-                    maybeRequestMissingChunks(content.fileId, total, got)
+                    maybeRequestMissingChunks(content.fileId, total, got, senderUserId)
                     "FILE $fileName: $got/$total chunks"
                 }
             }
@@ -892,7 +994,7 @@ class NearbyMeshClient(
         }
     }
 
-    private fun maybeRequestMissingChunks(fileId: String, total: Int, got: Int) {
+    private fun maybeRequestMissingChunks(fileId: String, total: Int, got: Int, fileSenderUserId: String) {
         if (got <= 0 || got >= total) return
         val now = System.currentTimeMillis()
         val last = repairRequestSentAtMs[fileId] ?: 0L
@@ -912,14 +1014,18 @@ class NearbyMeshClient(
             policy = AccessPolicy(),
             ttl = 2,
         ) ?: return
-        val targets = connected.toList()
+        val senderNorm = fileSenderUserId.substringBefore("|").trim()
+        val targetEndpoint = peerNamesByEndpoint.entries.find { e ->
+            e.value == senderNorm || e.value.startsWith("$senderNorm|")
+        }?.key
+        val targets = if (targetEndpoint != null) listOf(targetEndpoint) else connected.toList()
         if (targets.isEmpty()) return
         repairRequestSentAtMs[fileId] = now
         sendToTargets(targets, env)
-        log("FILE repair request ${fileId.take(6)} missing=${missing.take(20)}")
+        log("FILE repair request ${fileId.take(6)} missing=${missing.take(20)} -> ${targetEndpoint ?: "broadcast"}")
     }
 
-    private fun handleFileRepairRequest(req: OutboundContent.FileRepairRequest) {
+    private fun handleFileRepairRequest(req: OutboundContent.FileRepairRequest, requesterEndpointId: String) {
         val identity = localIdentity ?: return
         val chunks = sentFileChunks[req.fileId] ?: return
         var resent = 0
@@ -931,14 +1037,11 @@ class NearbyMeshClient(
                 policy = AccessPolicy(),
                 ttl = 3,
             ) ?: return@forEach
-            val targets = connected.toList()
-            if (targets.isNotEmpty()) {
-                sendToTargets(targets, env)
-                resent++
-            }
+            sendToTargets(listOf(requesterEndpointId), env)
+            resent++
         }
         if (resent > 0) {
-            log("FILE repaired ${req.fileId.take(6)} resent=$resent")
+            log("FILE repaired ${req.fileId.take(6)} resent=$resent -> $requesterEndpointId")
         }
     }
 

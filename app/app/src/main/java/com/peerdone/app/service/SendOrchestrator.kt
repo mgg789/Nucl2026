@@ -20,6 +20,7 @@ data class OutboundQueuedMessage(
     val content: OutboundContent,
     val policy: AccessPolicy,
     val deliveryClass: DeliveryClass,
+    val targetPeerId: String? = null,
     val createdAtMs: Long = System.currentTimeMillis(),
     val attempts: Int = 0,
 )
@@ -51,12 +52,14 @@ class SendOrchestrator(
         text: String,
         policy: AccessPolicy,
         deliveryClass: DeliveryClass,
+        targetPeerId: String? = null,
     ): DispatchOutcome {
         return enqueueAndTrySend(
             sender = sender,
             content = OutboundContent.Text(text),
             policy = policy,
             deliveryClass = deliveryClass,
+            targetPeerId = targetPeerId,
         )
     }
 
@@ -67,6 +70,7 @@ class SendOrchestrator(
         mimeType: String,
         bytes: ByteArray,
         policy: AccessPolicy,
+        targetPeerId: String? = null,
     ): List<DispatchOutcome> {
         val planned = FileTransferPlanner.plan(
             fileName = fileName,
@@ -79,6 +83,7 @@ class SendOrchestrator(
             content = planned.meta,
             policy = policy,
             deliveryClass = DeliveryClass.BULK,
+            targetPeerId = targetPeerId,
         )
         planned.chunks.forEach { chunk ->
             enqueueOnly(
@@ -86,6 +91,7 @@ class SendOrchestrator(
                 content = chunk,
                 policy = policy,
                 deliveryClass = DeliveryClass.BULK,
+                targetPeerId = targetPeerId,
             )
         }
         outcomes += flushAll()
@@ -98,12 +104,14 @@ class SendOrchestrator(
         content: OutboundContent,
         policy: AccessPolicy,
         deliveryClass: DeliveryClass,
+        targetPeerId: String? = null,
     ) {
         val msg = OutboundQueuedMessage(
             sender = sender,
             content = content,
             policy = policy,
             deliveryClass = deliveryClass,
+            targetPeerId = targetPeerId,
         )
         pending.add(msg)
         syncPendingFlow()
@@ -115,12 +123,14 @@ class SendOrchestrator(
         content: OutboundContent,
         policy: AccessPolicy,
         deliveryClass: DeliveryClass,
+        targetPeerId: String? = null,
     ): DispatchOutcome {
         val msg = OutboundQueuedMessage(
             sender = sender,
             content = content,
             policy = policy,
             deliveryClass = deliveryClass,
+            targetPeerId = targetPeerId,
         )
         pending.add(msg)
         syncPendingFlow()
@@ -166,6 +176,7 @@ class SendOrchestrator(
             content = msg.content,
             policy = msg.policy,
             deliveryClass = msg.deliveryClass,
+            targetPeerId = msg.targetPeerId,
         )
 
         return if (sent) {

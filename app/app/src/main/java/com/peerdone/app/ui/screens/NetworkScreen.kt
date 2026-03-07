@@ -22,10 +22,30 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import com.peerdone.app.core.message.OutboundContent
+import com.peerdone.app.core.transport.TransportHealth
+import com.peerdone.app.core.transport.TransportRegistry
+import com.peerdone.app.core.transport.TransportType
+import com.peerdone.app.core.transport.DeliveryClass
+import com.peerdone.app.domain.AccessPolicy
+import com.peerdone.app.service.SendOrchestrator
+import com.peerdone.app.data.NearbyTransportAdapter
+import com.peerdone.app.core.transport.TransportAdapter
+import com.peerdone.app.core.transport.StubTransportAdapter
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
+import com.peerdone.app.data.PreferencesStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -53,9 +73,21 @@ import com.peerdone.app.ui.theme.PeerDoneWhite
 fun NetworkScreen(
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val identityStore = LocalDeviceIdentity.current
     val nearbyClient = LocalNearbyClient.current
     val localIdentity = remember { identityStore.getOrCreate() }
+    var displayName by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        val prefs = PreferencesStore(context)
+        displayName = withContext(Dispatchers.IO) {
+            listOf(
+                prefs.userFirstName.first(),
+                prefs.userLastName.first(),
+                prefs.userNickname.first()
+            ).filter { it.isNotBlank() }.joinToString(" ").take(30).ifBlank { null }
+        }
+    }
 
     val isRunning by nearbyClient.isRunning.collectAsState()
     val topology by nearbyClient.topology.collectAsState()
@@ -91,8 +123,8 @@ fun NetworkScreen(
         Spacer(modifier = Modifier.height(30.dp))
 
         NetworkStatCard(
-            label = "Узлов в сети",
-            value = if (topology.nodes.isEmpty()) "Идёт подсчёт..." else "${topology.nodes.size}",
+            label = "Устройств в сети",
+            value = if (!isRunning) "—" else if (peerInfos.isEmpty()) "Идёт поиск..." else "${peerInfos.size}",
             valueColor = PeerDonePrimary
         )
 
@@ -180,7 +212,7 @@ fun NetworkScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = peer.deviceModel.ifBlank { peer.userId.take(16) }.ifBlank { "Устройство" },
+                                text = peer.displayName.ifBlank { peer.deviceModel }.ifBlank { peer.userId.take(16) }.ifBlank { "Устройство" },
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = PeerDoneWhite
@@ -270,7 +302,7 @@ fun NetworkScreen(
                 if (isRunning) {
                     nearbyClient.stop()
                 } else {
-                    nearbyClient.start(localIdentity)
+                    nearbyClient.start(localIdentity, displayName)
                 }
             },
             modifier = Modifier
@@ -286,6 +318,59 @@ fun NetworkScreen(
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Medium,
                 color = if (isRunning) PeerDoneStopButtonText else PeerDoneWhite
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        val adapters = remember(nearbyClient) {
+            listOf<TransportAdapter>(
+                NearbyTransportAdapter(nearbyClient),
+                StubTransportAdapter(
+                    type = TransportType.BLUETOOTH_LE,
+                    staticHealth = TransportHealth(TransportType.BLUETOOTH_LE, false, 250, 800, 7, 4),
+                ),
+            )
+        }
+        val adaptersByType = remember(adapters) { adapters.associateBy { it.type } }
+        val transportRegistry = remember(adapters) {
+            TransportRegistry().apply { adapters.forEach { register { it.health() } } }
+        }
+        val sendOrchestrator = remember(adaptersByType, transportRegistry) {
+            SendOrchestrator(adaptersByType, transportRegistry)
+        }
+        val scope = rememberCoroutineScope()
+        var rateLimitTestRunning by remember { mutableStateOf(false) }
+
+        Button(
+            onClick = {
+                if (rateLimitTestRunning) return@Button
+                rateLimitTestRunning = true
+                scope.launch {
+                    val policy = AccessPolicy()
+                    repeat(50) { i ->
+                        sendOrchestrator.enqueueAndTrySend(
+                            sender = localIdentity,
+                            content = OutboundContent.Text("rate-test #${i + 1}"),
+                            policy = policy,
+                            deliveryClass = DeliveryClass.INTERACTIVE,
+                        )
+                        kotlinx.coroutines.delay(80)
+                    }
+                    rateLimitTestRunning = false
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(24.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = PeerDoneGray),
+            enabled = !rateLimitTestRunning
+        ) {
+            Text(
+                text = if (rateLimitTestRunning) "Отправка…" else "Тест rate limit (50 сообщений)",
+                fontSize = 14.sp,
+                color = PeerDoneWhite
             )
         }
 

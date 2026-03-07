@@ -37,9 +37,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.peerdone.app.R
+import com.peerdone.app.core.audio.JitterStats
 import org.webrtc.EglBase
 import org.webrtc.SurfaceViewRenderer
-import com.peerdone.app.core.audio.JitterStats
 import com.peerdone.app.core.call.CallManager
 import com.peerdone.app.core.call.CallState
 import com.peerdone.app.ui.components.CallQualityIndicator
@@ -61,7 +61,8 @@ fun ActiveCallScreen(
     val remoteVideoTrack by callManager.remoteVideoTrack.collectAsState()
     var callDuration by remember { mutableLongStateOf(0L) }
     var jitterStats by remember { mutableStateOf(JitterStats(0, 0, 0, 0, 0f)) }
-    var lastVideoTrack by remember { mutableStateOf<org.webrtc.VideoTrack?>(null) }
+    var lastRemoteTrack by remember { mutableStateOf<org.webrtc.VideoTrack?>(null) }
+    var localSinkSet by remember { mutableStateOf(false) }
     val eglBase = remember { EglBase.create() }
     DisposableEffect(Unit) { onDispose { eglBase.release() } }
     
@@ -131,8 +132,7 @@ fun ActiveCallScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(240.dp)
-                    .clip(RoundedCornerShape(16.dp)),
-                contentAlignment = Alignment.Center
+                    .clip(RoundedCornerShape(16.dp))
             ) {
                 if (remoteVideoTrack != null) {
                     AndroidView(
@@ -143,15 +143,15 @@ fun ActiveCallScreen(
                             }
                         },
                         update = { renderer ->
-                            if (remoteVideoTrack != lastVideoTrack) {
-                                lastVideoTrack?.removeSink(renderer)
-                                lastVideoTrack = remoteVideoTrack
+                            if (remoteVideoTrack != lastRemoteTrack) {
+                                lastRemoteTrack?.removeSink(renderer)
+                                lastRemoteTrack = remoteVideoTrack
                                 remoteVideoTrack?.addSink(renderer)
                             }
                         },
                         onRelease = { renderer ->
-                            lastVideoTrack?.removeSink(renderer)
-                            lastVideoTrack = null
+                            lastRemoteTrack?.removeSink(renderer)
+                            lastRemoteTrack = null
                             renderer.release()
                         },
                         modifier = Modifier.fillMaxSize()
@@ -159,18 +159,55 @@ fun ActiveCallScreen(
                 } else {
                     Box(
                         modifier = Modifier
-                            .size(120.dp)
-                            .clip(CircleShape)
-                            .background(PeerDoneDarkGray),
+                            .fillMaxSize()
+                            .padding(60.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = peerName.firstOrNull()?.uppercase() ?: "?",
-                            fontSize = 48.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = PeerDoneWhite
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(120.dp)
+                                .clip(CircleShape)
+                                .background(PeerDoneDarkGray),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = peerName.firstOrNull()?.uppercase() ?: "?",
+                                fontSize = 48.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = PeerDoneWhite
+                            )
+                        }
                     }
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp)
+                        .size(80.dp)
+                        .clip(CircleShape)
+                        .background(PeerDoneDarkGray)
+                ) {
+                    AndroidView(
+                        factory = { ctx ->
+                            SurfaceViewRenderer(ctx).apply {
+                                init(eglBase.eglBaseContext, null)
+                                setZOrderMediaOverlay(true)
+                                setMirror(true)
+                            }
+                        },
+                        update = { renderer ->
+                            if (!localSinkSet) {
+                                callManager.setLocalVideoSink(renderer)
+                                localSinkSet = true
+                            }
+                        },
+                        onRelease = { renderer ->
+                            callManager.setLocalVideoSink(null)
+                            localSinkSet = false
+                            renderer.release()
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
             }
             
@@ -192,7 +229,7 @@ fun ActiveCallScreen(
                     CallState.INCOMING_OFFER_RECEIVED -> "Входящий вызов"
                     CallState.CONNECTING -> "Соединение..."
                     CallState.ACTIVE -> formatCallDuration(callDuration)
-                    CallState.ENDED -> "Завершён"
+                    CallState.ENDED, CallState.IDLE -> "Завершён"
                     else -> ""
                 },
                 fontSize = 18.sp,

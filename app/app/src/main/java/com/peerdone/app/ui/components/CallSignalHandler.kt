@@ -22,7 +22,7 @@ import kotlin.collections.mutableSetOf
 fun CallSignalHandler() {
     val nearbyClient = LocalNearbyClient.current
     val callManager = LocalCallManager.current
-    val incoming by nearbyClient.incomingMessages.collectAsState()
+    val incoming by nearbyClient.realtimeMessages.collectAsState()
     val processedIds = remember { mutableSetOf<String>() }
 
     LaunchedEffect(incoming) {
@@ -31,7 +31,7 @@ fun CallSignalHandler() {
             if (!processedIds.add(msg.envelope.id)) return@forEach
             val raw = msg.decryptedText ?: return@forEach
             val content = ContentCodec.decode(raw) ?: return@forEach
-            val peerId = msg.envelope.senderUserId
+            val peerId = msg.envelope.senderUserId.substringBefore("|").trim()
             val peerName = peerId.take(16)
             when (content) {
                 is OutboundContent.CallSignal -> {
@@ -47,7 +47,8 @@ fun CallSignalHandler() {
                     callManager.handleAudioPacket(
                         callId = content.callId,
                         sequenceNumber = content.sequenceNumber,
-                        audioDataBase64 = content.audioDataBase64
+                        audioDataBase64 = content.audioDataBase64,
+                        senderPeerId = peerId
                     )
                 }
                 else -> { }
