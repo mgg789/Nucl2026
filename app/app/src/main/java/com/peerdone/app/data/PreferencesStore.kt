@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "peerdone_prefs")
 
@@ -23,6 +24,30 @@ class PreferencesStore(private val context: Context) {
         private val USER_NICKNAME = stringPreferencesKey("user_nickname")
         /** "auto" | "nearby" | "wifi_direct" | "lan" — какой транспорт использовать для общения. */
         private val PREFERRED_TRANSPORT = stringPreferencesKey("preferred_transport")
+        /** JSON map peerId -> lastReadTimestampMs для сброса счётчика непрочитанных при открытии чата. */
+        private val CHAT_LAST_READ_TS = stringPreferencesKey("chat_last_read_ts")
+    }
+
+    private fun parseLastReadMap(json: String): Map<String, Long> =
+        try {
+            val obj = JSONObject(json)
+            obj.keys().asSequence().associateWith { obj.getLong(it) }
+        } catch (_: Exception) {
+            emptyMap()
+        }
+
+    private fun serializeLastReadMap(map: Map<String, Long>): String =
+        JSONObject(map.mapValues { it.value }).toString()
+
+    val lastReadTimestamps: Flow<Map<String, Long>> = context.dataStore.data
+        .map { prefs -> parseLastReadMap(prefs[CHAT_LAST_READ_TS] ?: "{}") }
+
+    suspend fun setLastReadTimestamp(peerId: String, timestampMs: Long) {
+        context.dataStore.edit { prefs ->
+            val current = parseLastReadMap(prefs[CHAT_LAST_READ_TS] ?: "{}")
+            val updated = current + (peerId to timestampMs)
+            prefs[CHAT_LAST_READ_TS] = serializeLastReadMap(updated)
+        }
     }
 
     val preferredTransport: Flow<String> = context.dataStore.data
