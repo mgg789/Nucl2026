@@ -23,6 +23,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -77,6 +78,7 @@ import com.peerdone.app.ui.theme.PeerDoneTextPrimary
 import com.peerdone.app.ui.theme.PeerDoneTextSecondary
 import com.peerdone.app.ui.theme.PeerDoneWhite
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NetworkScreen(
     modifier: Modifier = Modifier
