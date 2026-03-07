@@ -861,6 +861,10 @@ class NearbyMeshClient(
         val envelope = buildChatEnvelope(sender, encoded, policy, ttl, recipientUserId = normPeer) ?: return 0
         val previewText = when (content) {
             is OutboundContent.Text -> content.text
+            is OutboundContent.FileMeta -> "Файл: ${content.fileName}"
+            is OutboundContent.FileChunk -> "Файл"
+            is OutboundContent.VoiceNoteMeta -> "Голосовое сообщение"
+            is OutboundContent.VideoNoteMeta -> "Видео"
             else -> "[${content.kind}]"
         }
         val signed = signEnvelope(envelope)
@@ -872,10 +876,11 @@ class NearbyMeshClient(
         pendingAcks[signed.id] = PendingAck(envelope = signed)
         sentCount++
         pendingSentAtMs[signed.id] = System.currentTimeMillis()
-        if (content !is OutboundContent.HistoryRequest && content !is OutboundContent.HistoryResponse) {
+        if (content !is OutboundContent.HistoryRequest && content !is OutboundContent.HistoryResponse &&
+            content !is OutboundContent.FileChunk) {
             val storedType = when (content) {
                 is OutboundContent.Text -> StoredMessageType.TEXT
-                is OutboundContent.FileMeta, is OutboundContent.FileChunk -> StoredMessageType.FILE
+                is OutboundContent.FileMeta -> StoredMessageType.FILE
                 is OutboundContent.VoiceNoteMeta -> StoredMessageType.VOICE
                 is OutboundContent.VideoNoteMeta -> StoredMessageType.VIDEO_NOTE
                 else -> StoredMessageType.TEXT
@@ -886,6 +891,7 @@ class NearbyMeshClient(
                 timestampMs = signed.timestampMs,
                 isOutgoing = true,
                 type = storedType,
+                fileName = (content as? OutboundContent.FileMeta)?.fileName,
             ))
         }
         syncStats()

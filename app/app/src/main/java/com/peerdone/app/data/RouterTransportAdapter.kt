@@ -42,6 +42,10 @@ class RouterTransportAdapter(
         ) ?: return false
         val preview = when (content) {
             is OutboundContent.Text -> content.text
+            is OutboundContent.FileMeta -> "Файл: ${content.fileName}"
+            is OutboundContent.FileChunk -> "Файл"
+            is OutboundContent.VoiceNoteMeta -> "Голосовое сообщение"
+            is OutboundContent.VideoNoteMeta -> "Видео"
             else -> "[${content.kind}]"
         }
         return router.sendChat(env, previewText = preview) > 0
