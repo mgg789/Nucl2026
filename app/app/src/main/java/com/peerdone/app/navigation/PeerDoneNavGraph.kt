@@ -15,6 +15,7 @@ import com.peerdone.app.ui.screens.CallsScreen
 import com.peerdone.app.ui.screens.ChatListScreen
 import com.peerdone.app.ui.screens.ChatScreen
 import com.peerdone.app.ui.screens.MainScreen
+import com.peerdone.app.ui.screens.DataScreen
 import com.peerdone.app.ui.screens.NetworkScreen
 import com.peerdone.app.ui.screens.SettingsScreen
 import com.peerdone.app.ui.onboarding.OnboardingScreen
@@ -117,8 +118,14 @@ fun PeerDoneNavGraph(
 
         composable(Screen.Settings.route) {
             SettingsScreen(
-                onProfileClick = { navController.navigate(Screen.Profile.route) }
+                onProfileClick = { navController.navigate(Screen.Profile.route) },
+                onNetworkClick = { navController.navigate(Screen.Network.route) },
+                onDataClick = { navController.navigate(Screen.Data.route) }
             )
+        }
+
+        composable(Screen.Data.route) {
+            DataScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Screen.Profile.route) {

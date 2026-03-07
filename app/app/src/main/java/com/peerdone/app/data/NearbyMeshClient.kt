@@ -2,9 +2,10 @@ package com.peerdone.app.data
 
 import android.content.Context
 import android.os.Build
-import com.peerdone.app.core.message.ContentKind
-import com.peerdone.app.core.message.OutboundContent
 import com.peerdone.app.core.message.ContentCodec
+import com.peerdone.app.core.message.ContentKind
+import com.peerdone.app.core.message.HistoryResponseItem
+import com.peerdone.app.core.message.OutboundContent
 import com.peerdone.app.core.transport.TransportHealth
 import com.peerdone.app.core.transport.TransportType
 import com.peerdone.app.domain.AccessPolicy
@@ -112,6 +113,7 @@ class NearbyMeshClient(
     private val queueStore = MessageQueueStore(appContext)
     private val identityTrustStore = IdentityTrustStore(appContext)
     private val incomingFileStore = IncomingFileStore(appContext)
+    val chatHistoryStore = ChatHistoryStore(appContext)
 
     private var localIdentity: LocalIdentity? = null
     private var currentEndpointName: String? = null
@@ -426,7 +428,7 @@ class NearbyMeshClient(
 
                 val content = plainText?.let { ContentCodec.decode(it) }
 
-                // Realtime (calls/audio): no rate limit, do not add to chat list
+                // Realtime (calls/audio): только 1:1, не форвардить — иначе звонок приходит всем в сети
                 if (content is OutboundContent.CallSignal || content is OutboundContent.AudioPacket) {
                     val msg = ReceivedMeshMessage(
                         fromEndpointId = fromEndpointId,
@@ -438,7 +440,39 @@ class NearbyMeshClient(
                     )
                     _realtimeMessages.value = (_realtimeMessages.value + msg).takeLast(500)
                     if (!dropAcksForDemo) sendAck(fromEndpointId, envelope.id)
-                    if (envelope.ttl > 0) forward(envelope, fromEndpointId)
+                    // Не вызываем forward() — звонки и аудио только для адресата
+                    return
+                }
+
+                // Запрос/ответ истории чата — не показывать в ленте, только обработать
+                if (content is OutboundContent.HistoryRequest && identity != null) {
+                    val senderPeerId = envelope.senderUserId.substringBefore("|").trim()
+                    val ourMessages = chatHistoryStore.getMessagesForPeerSync(senderPeerId)
+                    val items = ourMessages.map { m: StoredChatMessage ->
+                        HistoryResponseItem(m.id, m.text, m.timestampMs, m.isOutgoing, m.type.name, m.fileName, m.filePath, m.voiceFileId)
+                    }
+                    val response = OutboundContent.HistoryResponse(content.requestId, items)
+                    sendChatToPeer(senderPeerId, identity, response, AccessPolicy(), ttl = 1)
+                    if (!dropAcksForDemo) sendAck(fromEndpointId, envelope.id)
+                    return
+                }
+                if (content is OutboundContent.HistoryResponse) {
+                    val senderPeerId = envelope.senderUserId.substringBefore("|").trim()
+                    // У отправителя ответа isOutgoing = его исходящие; для нас его исходящие = наши входящие
+                    val stored = content.messages.map { m ->
+                        StoredChatMessage(
+                            id = m.id,
+                            text = m.text,
+                            timestampMs = m.timestampMs,
+                            isOutgoing = !m.isOutgoing,
+                            type = runCatching { StoredMessageType.valueOf(m.type) }.getOrElse { StoredMessageType.TEXT },
+                            fileName = m.fileName,
+                            filePath = m.filePath,
+                            voiceFileId = m.voiceFileId,
+                        )
+                    }
+                    chatHistoryStore.addMessages(senderPeerId, stored)
+                    if (!dropAcksForDemo) sendAck(fromEndpointId, envelope.id)
                     return
                 }
 
@@ -481,6 +515,26 @@ class NearbyMeshClient(
                         receivedFileName != null -> receivedFileName
                         else -> enrichedSummary ?: plainText.toSummary()
                     }
+                    val isAudio = receivedFilePath != null && receivedFileMimeType?.startsWith("audio/") == true
+                    val isVideo = receivedFilePath != null && receivedFileMimeType?.startsWith("video/") == true
+                    val isFile = receivedFileName != null && !isAudio && !isVideo
+                    val storedType = when {
+                        isAudio -> StoredMessageType.VOICE
+                        isVideo -> StoredMessageType.VIDEO_NOTE
+                        isFile -> StoredMessageType.FILE
+                        else -> StoredMessageType.TEXT
+                    }
+                    val senderPeerId = envelope.senderUserId.substringBefore("|").trim()
+                    chatHistoryStore.addMessage(senderPeerId, StoredChatMessage(
+                        id = envelope.id,
+                        text = displaySummary,
+                        timestampMs = envelope.timestampMs,
+                        isOutgoing = false,
+                        type = storedType,
+                        fileName = receivedFileName,
+                        filePath = receivedFilePath,
+                        voiceFileId = if (isAudio) envelope.id else null,
+                    ))
                     _incomingMessages.value = (_incomingMessages.value + ReceivedMeshMessage(
                         fromEndpointId = fromEndpointId,
                         envelope = envelope,
@@ -737,19 +791,26 @@ class NearbyMeshClient(
         sendChat(envelope, encoded.take(50))
     }
 
+    /** Запросить у узла историю чата с нами; ответ придёт как HistoryResponse и будет слит в chatHistoryStore. */
+    fun requestHistoryFromPeer(peerId: String, sender: LocalIdentity): Int {
+        val request = OutboundContent.HistoryRequest(requestId = java.util.UUID.randomUUID().toString())
+        return sendToPeer(peerId, sender, request)
+    }
+
     /**
      * Отправка контента только одному пиру (по userId), как в эталоне 1:1.
      * Используется для звонков и аудио, чтобы не слать всем в mesh.
      */
     fun sendToPeer(peerUserId: String, sender: LocalIdentity, content: OutboundContent): Int {
-        val endpointId = peerNamesByEndpoint.entries.find { it.value == peerUserId || it.value.startsWith("$peerUserId|") }?.key
+        val normPeer = peerUserId.substringBefore("|").trim()
+        val endpointId = peerNamesByEndpoint.entries.find { it.value == normPeer || it.value.startsWith("$normPeer|") }?.key
             ?: run {
-                log("sendToPeer: no endpoint for peer $peerUserId")
+                log("sendToPeer: no endpoint for peer $normPeer")
                 return 0
             }
         val policy = AccessPolicy()
         val encoded = ContentCodec.encode(content)
-        val envelope = buildChatEnvelope(sender, encoded, policy, ttl = 1) ?: return 0
+        val envelope = buildChatEnvelope(sender, encoded, policy, ttl = 1, recipientUserId = normPeer) ?: return 0
         val signed = signEnvelope(envelope)
         return sendToTargets(listOf(endpointId), signed)
     }
@@ -778,6 +839,22 @@ class NearbyMeshClient(
         pendingAcks[signed.id] = PendingAck(envelope = signed)
         sentCount++
         pendingSentAtMs[signed.id] = System.currentTimeMillis()
+        if (content !is OutboundContent.HistoryRequest && content !is OutboundContent.HistoryResponse) {
+            val storedType = when (content) {
+                is OutboundContent.Text -> StoredMessageType.TEXT
+                is OutboundContent.FileMeta, is OutboundContent.FileChunk -> StoredMessageType.FILE
+                is OutboundContent.VoiceNoteMeta -> StoredMessageType.VOICE
+                is OutboundContent.VideoNoteMeta -> StoredMessageType.VIDEO_NOTE
+                else -> StoredMessageType.TEXT
+            }
+            chatHistoryStore.addMessage(normPeer, StoredChatMessage(
+                id = signed.id,
+                text = previewText,
+                timestampMs = signed.timestampMs,
+                isOutgoing = true,
+                type = storedType,
+            ))
+        }
         syncStats()
         syncDeliveryMetrics()
         scheduleRetry(signed.id)
@@ -1078,6 +1155,8 @@ private fun String?.toSummary(): String {
         is OutboundContent.VideoNoteMeta -> "VIDEO_NOTE ${decoded.durationMs}ms ${decoded.width}x${decoded.height}"
         is OutboundContent.CallSignal -> "CALL_SIGNAL ${decoded.phase} ${decoded.callId.take(8)}"
         is OutboundContent.AudioPacket -> "AUDIO_PACKET seq=${decoded.sequenceNumber} ${decoded.callId.take(8)}"
+        is OutboundContent.HistoryRequest -> "HISTORY_REQUEST ${decoded.requestId.take(8)}"
+        is OutboundContent.HistoryResponse -> "HISTORY_RESPONSE ${decoded.requestId.take(8)} ${decoded.messages.size} msgs"
     }
 }
 

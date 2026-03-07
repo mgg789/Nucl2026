@@ -12,6 +12,8 @@ enum class ContentKind {
     VIDEO_NOTE_META,
     CALL_SIGNAL,
     AUDIO_PACKET,
+    HISTORY_REQUEST,
+    HISTORY_RESPONSE,
 }
 
 sealed class OutboundContent(
@@ -69,7 +71,29 @@ sealed class OutboundContent(
         val codec: String = "pcm_16bit",
         val sampleRate: Int = 16000,
     ) : OutboundContent(ContentKind.AUDIO_PACKET)
+
+    /** Запрос истории чата у узла (отправитель — наш peerId, получатель пришлёт свои сообщения для этого чата). */
+    data class HistoryRequest(
+        val requestId: String,
+    ) : OutboundContent(ContentKind.HISTORY_REQUEST)
+
+    /** Ответ на запрос истории: список сообщений для чата с отправителем этого пакета. */
+    data class HistoryResponse(
+        val requestId: String,
+        val messages: List<HistoryResponseItem>,
+    ) : OutboundContent(ContentKind.HISTORY_RESPONSE)
 }
+
+data class HistoryResponseItem(
+    val id: String,
+    val text: String,
+    val timestampMs: Long,
+    val isOutgoing: Boolean,
+    val type: String,
+    val fileName: String? = null,
+    val filePath: String? = null,
+    val voiceFileId: String? = null,
+)
 
 object ContentCodec {
     fun encode(content: OutboundContent): String {
@@ -111,6 +135,24 @@ object ContentCodec {
                 .put("audioDataBase64", content.audioDataBase64)
                 .put("codec", content.codec)
                 .put("sampleRate", content.sampleRate)
+            is OutboundContent.HistoryRequest -> json.put("requestId", content.requestId)
+            is OutboundContent.HistoryResponse -> {
+                json.put("requestId", content.requestId)
+                val arr = org.json.JSONArray()
+                content.messages.forEach { m ->
+                    arr.put(org.json.JSONObject().apply {
+                        put("id", m.id)
+                        put("text", m.text)
+                        put("timestampMs", m.timestampMs)
+                        put("isOutgoing", m.isOutgoing)
+                        put("type", m.type)
+                        put("fileName", m.fileName ?: "")
+                        put("filePath", m.filePath ?: "")
+                        put("voiceFileId", m.voiceFileId ?: "")
+                    })
+                }
+                json.put("messages", arr)
+            }
         }
         return json.toString()
     }
@@ -167,6 +209,26 @@ object ContentCodec {
                     codec = json.optString("codec", "pcm_16bit"),
                     sampleRate = json.optInt("sampleRate", 16000),
                 )
+                ContentKind.HISTORY_REQUEST -> OutboundContent.HistoryRequest(
+                    requestId = json.getString("requestId"),
+                )
+                ContentKind.HISTORY_RESPONSE -> {
+                    val arr = json.getJSONArray("messages")
+                    val list = (0 until arr.length()).map { i ->
+                        val o = arr.getJSONObject(i)
+                        HistoryResponseItem(
+                            id = o.getString("id"),
+                            text = o.optString("text", ""),
+                            timestampMs = o.optLong("timestampMs", 0L),
+                            isOutgoing = o.optBoolean("isOutgoing", false),
+                            type = o.optString("type", "TEXT"),
+                            fileName = o.optString("fileName").takeIf { it.isNotEmpty() },
+                            filePath = o.optString("filePath").takeIf { it.isNotEmpty() },
+                            voiceFileId = o.optString("voiceFileId").takeIf { it.isNotEmpty() },
+                        )
+                    }
+                    OutboundContent.HistoryResponse(requestId = json.getString("requestId"), messages = list)
+                }
             }
         }.getOrNull()
     }

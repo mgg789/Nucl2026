@@ -99,8 +99,13 @@ class WebRtcCallSession(
     private fun ensurePeerConnection() {
         if (peerConnection != null) return
         val factory = peerConnectionFactory ?: return
-        val rtcConfig = PeerConnection.RTCConfiguration(listOf()).apply {
+        val iceServers = listOf(
+            org.webrtc.PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+            org.webrtc.PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
+        )
+        val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
         val constraints = MediaConstraints()
         peerConnection = factory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {

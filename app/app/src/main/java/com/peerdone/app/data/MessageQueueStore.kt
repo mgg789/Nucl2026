@@ -90,6 +90,11 @@ class MessageQueueStore(context: Context) {
         }.getOrDefault(emptyList())
     }
 
+    fun clearQueue() {
+        _records.value = emptyList()
+        prefs.edit().putString(key, "[]").apply()
+    }
+
     private fun persist(records: List<OutboundMessageRecord>) {
         val arr = JSONArray()
         records.forEach { rec ->

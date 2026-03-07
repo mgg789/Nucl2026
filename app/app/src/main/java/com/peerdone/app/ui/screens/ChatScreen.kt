@@ -65,6 +65,8 @@ import com.peerdone.app.core.transport.TransportHealth
 import com.peerdone.app.core.transport.TransportRegistry
 import com.peerdone.app.core.transport.TransportType
 import com.peerdone.app.data.NearbyTransportAdapter
+import com.peerdone.app.data.StoredChatMessage
+import com.peerdone.app.data.StoredMessageType
 import com.peerdone.app.di.LocalDeviceIdentity
 import com.peerdone.app.di.LocalNearbyClient
 import com.peerdone.app.domain.AccessPolicy
@@ -143,6 +145,8 @@ fun ChatScreen(
     }
 
     val incoming by nearbyClient.incomingMessages.collectAsState()
+    val storedMessages by nearbyClient.chatHistoryStore.getMessagesForPeerFlow(peerId)
+        .collectAsState(initial = remember(peerId) { nearbyClient.chatHistoryStore.getMessagesForPeerSync(peerId) })
     val localMessages = remember { mutableStateListOf<ChatMessage>() }
     var messageDraft by remember { mutableStateOf("") }
     var isRecordingVoice by remember { mutableStateOf(false) }
@@ -230,8 +234,32 @@ fun ChatScreen(
             }
     }
 
-    val allMessages = remember(remoteMessages, localMessages.toList()) {
-        (remoteMessages + localMessages).sortedBy { it.timestampMs }
+    val storedAsChat = remember(storedMessages) {
+        storedMessages.map { s ->
+            ChatMessage(
+                id = s.id,
+                text = s.text,
+                timestampMs = s.timestampMs,
+                isOutgoing = s.isOutgoing,
+                type = when (s.type) {
+                    StoredMessageType.TEXT -> ChatMessageType.TEXT
+                    StoredMessageType.VOICE -> ChatMessageType.VOICE
+                    StoredMessageType.FILE -> ChatMessageType.FILE
+                    StoredMessageType.VIDEO_NOTE -> ChatMessageType.VIDEO_NOTE
+                },
+                voiceFileId = s.voiceFileId,
+                voiceFile = s.filePath?.takeIf { s.type == StoredMessageType.VOICE }?.let { File(it) },
+                fileName = s.fileName,
+                filePath = s.filePath,
+            )
+        }
+    }
+
+    val allMessages = remember(storedAsChat, remoteMessages, localMessages.toList()) {
+        (storedAsChat + remoteMessages)
+            .distinctBy { it.id }
+            .sortedBy { it.timestampMs }
+            .let { base -> (base + localMessages).distinctBy { it.id }.sortedBy { it.timestampMs } }
     }
 
     val listState = rememberLazyListState()
@@ -251,7 +279,8 @@ fun ChatScreen(
             peerName = peerId.take(16),
             isOnline = true,
             onBack = onBack,
-            onCallClick = onCallClick
+            onCallClick = onCallClick,
+            onRequestHistory = { nearbyClient.requestHistoryFromPeer(peerId, localIdentity) }
         )
 
         LazyColumn(
@@ -399,6 +428,7 @@ private fun ChatHeader(
     isOnline: Boolean,
     onBack: () -> Unit,
     onCallClick: () -> Unit,
+    onRequestHistory: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -473,7 +503,19 @@ private fun ChatHeader(
                 )
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+
+            IconButton(
+                onClick = onRequestHistory,
+                modifier = Modifier.size(40.dp)
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_storage),
+                    contentDescription = "Восстановить историю у узла",
+                    modifier = Modifier.size(22.dp),
+                    tint = PeerDoneDarkGray
+                )
+            }
 
             Box(
                 modifier = Modifier

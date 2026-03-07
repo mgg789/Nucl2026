@@ -57,6 +57,10 @@ class IncomingFileStore(context: Context) {
         }.getOrDefault(emptyList())
     }
 
+    fun clearAll() {
+        saveAll(emptyList())
+    }
+
     fun saveAll(files: List<PersistedIncomingFile>) {
         val arr = JSONArray()
         files.forEach { f ->

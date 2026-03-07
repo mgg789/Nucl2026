@@ -189,11 +189,6 @@ class CallManager(
                         webrtcSession?.setRemoteAnswer(sdpOrIce)
                         startAudioStreamFallback()
                     }
-                    sdpOrIce == "ok" -> {
-                        _activeCall.value = current.copy(state = CallState.CONNECTING)
-                        _callState.value = CallState.CONNECTING
-                        startAudioStreamFallback()
-                    }
                 }
             }
             "answer_chunk" -> {
@@ -273,7 +268,7 @@ class CallManager(
 
         ensureWebRtcSessionCallee(incoming.callId, incoming.peerId, incoming.peerName)
         if (!fullOffer.isNullOrEmpty()) webrtcSession?.setRemoteOffer(fullOffer)
-        sendCallSignal(incoming.callId, "answer", "ok", incoming.peerId)
+        // Реальный SDP answer отправится из WebRtcCallSession после createAnswer() в onSendSignal
         startAudioStreamFallback()
     }
 

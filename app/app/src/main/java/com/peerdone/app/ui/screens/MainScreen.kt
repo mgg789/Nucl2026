@@ -121,7 +121,9 @@ fun MainScreen(
                 }
                 BottomNavItem.SETTINGS -> {
                     SettingsScreen(
-                        onProfileClick = { }
+                        onProfileClick = { navController.navigate(Screen.Profile.route) },
+                        onNetworkClick = { navController.navigate(Screen.Network.route) },
+                        onDataClick = { navController.navigate(Screen.Data.route) }
                     )
                 }
             }

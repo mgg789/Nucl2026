@@ -92,6 +92,7 @@ fun NetworkScreen(
     val isRunning by nearbyClient.isRunning.collectAsState()
     val topology by nearbyClient.topology.collectAsState()
     val rawPeerInfos by nearbyClient.connectedPeerInfos.collectAsState()
+    val deliveryMetrics by nearbyClient.deliveryMetrics.collectAsState()
     val peerInfos = remember(rawPeerInfos) { rawPeerInfos.distinctBy { it.userId } }
 
     Column(
@@ -142,6 +143,33 @@ fun NetworkScreen(
             label = "Транспорт",
             value = "Nearby (BLE + Wi‑Fi)",
             valueColor = PeerDoneBlue
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "Метрики",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = PeerDoneWhite
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        NetworkStatCard(
+            label = "Пинг (RTT)",
+            value = if (deliveryMetrics.avgAckRttMs > 0) "${deliveryMetrics.avgAckRttMs} мс" else "—",
+            valueColor = PeerDonePrimary
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        NetworkStatCard(
+            label = "RTT p95",
+            value = if (deliveryMetrics.p95AckRttMs > 0) "${deliveryMetrics.p95AckRttMs} мс" else "—",
+            valueColor = PeerDoneGray
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        NetworkStatCard(
+            label = "Доставка",
+            value = "Отпр: ${deliveryMetrics.sentCount} · Доставлено: ${deliveryMetrics.ackedCount} · Потери: ${deliveryMetrics.lossPercent}%",
+            valueColor = PeerDoneDarkGray
         )
 
         Spacer(modifier = Modifier.height(8.dp))

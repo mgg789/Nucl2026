@@ -73,6 +73,8 @@ private val settingsSections = listOf(
 @Composable
 fun SettingsScreen(
     onProfileClick: () -> Unit,
+    onNetworkClick: () -> Unit = {},
+    onDataClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -173,9 +175,15 @@ fun SettingsScreen(
                 modifier = Modifier.padding(vertical = 8.dp)
             ) {
                 settingsSections.forEachIndexed { index, section ->
+                    val onClick = when (index) {
+                        0 -> onProfileClick
+                        1 -> onNetworkClick
+                        2 -> onDataClick
+                        else -> { {} }
+                    }
                     SettingsSectionRow(
                         section = section,
-                        onClick = if (index == 0) onProfileClick else { {} }
+                        onClick = onClick
                     )
                     if (index < settingsSections.size - 1) {
                         HorizontalDivider(
