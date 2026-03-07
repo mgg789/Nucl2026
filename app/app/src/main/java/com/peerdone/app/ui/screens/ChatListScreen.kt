@@ -81,16 +81,19 @@ fun ChatListScreen(
     val localIdentity = remember { identityStore.getOrCreate() }
     val connectedPeers by nearbyClient.connectedPeerInfos.collectAsState()
     val incoming by nearbyClient.incomingMessages.collectAsState()
+    val chatHistoryByPeer by nearbyClient.chatHistoryStore.byPeer.collectAsState()
 
     var selectedFilter by remember { mutableStateOf(ChatFilter.CHATS) }
 
     fun normalizePeerId(s: String): String = s.substringBefore("|").trim()
     val localUserId = normalizePeerId(localIdentity.userId)
-    val chatPreviews = remember(incoming, connectedPeers, localIdentity) {
-        val peerIds = connectedPeers.map { normalizePeerId(it.userId) }
+    val chatPreviews = remember(incoming, connectedPeers, chatHistoryByPeer, localIdentity) {
+        val connectedPeerIds = connectedPeers.map { normalizePeerId(it.userId) }
             .filter { it.isNotBlank() && it != localUserId }
-            .distinct()
-            .sorted()
+            .toSet()
+        val historyPeerIds = chatHistoryByPeer.keys
+            .filter { it.isNotBlank() && it != localUserId }
+        val peerIds = (connectedPeerIds + historyPeerIds).distinct().sorted()
         val peerInfoById = connectedPeers.associateBy { normalizePeerId(it.userId) }
 
         peerIds.map { peerId ->
@@ -100,15 +103,29 @@ fun ChatListScreen(
                 !info?.deviceModel.isNullOrBlank() -> info!!.deviceModel
                 else -> peerId.take(16)
             }
-            val peerMessages = incoming.filter { normalizePeerId(it.envelope.senderUserId) == peerId }
-            val lastMsg = peerMessages.lastOrNull()
+            val history = chatHistoryByPeer[peerId].orEmpty().sortedBy { it.timestampMs }
+            val lastStoredMsg = history.lastOrNull()
+            val peerIncoming = incoming.filter { normalizePeerId(it.envelope.senderUserId) == peerId }
+            val lastIncoming = peerIncoming.lastOrNull()
+            val lastMsg = when {
+                lastIncoming != null && (lastStoredMsg == null || lastIncoming.envelope.timestampMs > lastStoredMsg.timestampMs) ->
+                    lastIncoming.contentSummary
+                lastStoredMsg != null -> lastStoredMsg.text
+                else -> "Нет сообщений"
+            }
+            val lastTime = when {
+                lastIncoming != null && (lastStoredMsg == null || lastIncoming.envelope.timestampMs > lastStoredMsg.timestampMs) ->
+                    lastIncoming.envelope.timestampMs.toTimeString()
+                lastStoredMsg != null -> lastStoredMsg.timestampMs.toTimeString()
+                else -> "--:--"
+            }
             ChatPreviewItem(
                 peerId = peerId,
                 displayName = displayName,
-                lastMessage = lastMsg?.contentSummary ?: "Нет сообщений",
-                lastTime = lastMsg?.envelope?.timestampMs?.toTimeString() ?: "--:--",
-                isOnline = true,
-                unreadCount = peerMessages.count { it.accessGranted }.coerceAtMost(99)
+                lastMessage = lastMsg,
+                lastTime = lastTime,
+                isOnline = peerId in connectedPeerIds,
+                unreadCount = peerIncoming.count { it.accessGranted }.coerceAtMost(99)
             )
         }
     }
