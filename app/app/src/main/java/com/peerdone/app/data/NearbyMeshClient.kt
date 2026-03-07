@@ -104,6 +104,7 @@ private data class PendingAck(
 
 class NearbyMeshClient(
     context: Context,
+    val chatHistoryStore: ChatHistoryStore,
 ) {
     private val appContext = context.applicationContext
     private val connectionsClient: ConnectionsClient = Nearby.getConnectionsClient(appContext)
@@ -114,7 +115,6 @@ class NearbyMeshClient(
     private val queueStore = MessageQueueStore(appContext)
     private val identityTrustStore = IdentityTrustStore(appContext)
     private val incomingFileStore = IncomingFileStore(appContext)
-    val chatHistoryStore = ChatHistoryStore(appContext)
 
     private var localIdentity: LocalIdentity? = null
     private var currentEndpointName: String? = null

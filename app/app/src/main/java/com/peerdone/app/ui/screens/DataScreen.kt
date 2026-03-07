@@ -35,6 +35,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.peerdone.app.PeerDoneApplication
 import com.peerdone.app.R
 import com.peerdone.app.data.CallHistoryStore
 import com.peerdone.app.data.ChatHistoryStore
@@ -58,7 +59,7 @@ fun DataScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val callHistoryStore = remember { CallHistoryStore(context) }
-    val chatHistoryStore = remember { ChatHistoryStore(context) }
+    val chatHistoryStore = (context.applicationContext as PeerDoneApplication).chatHistoryStore
     val messageQueueStore = remember { MessageQueueStore(context) }
     val incomingFileStore = remember { IncomingFileStore(context) }
     val callHistory by callHistoryStore.history.collectAsState(initial = emptyList())
