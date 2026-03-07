@@ -2,6 +2,7 @@ package com.peerdone.app
 
 import android.app.Application
 import com.peerdone.app.core.call.CallManager
+import com.peerdone.app.core.logging.LogcatReader
 import com.peerdone.app.data.ChatHistoryStore
 import com.peerdone.app.data.DeviceIdentityStore
 import com.peerdone.app.data.LanMeshClient
@@ -17,6 +18,8 @@ import kotlinx.coroutines.SupervisorJob
 class PeerDoneApplication : Application() {
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    private val logcatReader by lazy { LogcatReader(applicationScope) }
 
     val preferencesStore: PreferencesStore by lazy { PreferencesStore(this) }
 
@@ -73,5 +76,6 @@ class PeerDoneApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        logcatReader.start()
     }
 }

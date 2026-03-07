@@ -69,6 +69,11 @@ private val settingsSections = listOf(
         iconResId = R.drawable.ic_storage,
         title = "Локальные данные",
         subtitle = "История, чаты, кэш"
+    ),
+    SettingsSection(
+        iconResId = R.drawable.ic_info,
+        title = "Логи",
+        subtitle = "Журнал логов приложения"
     )
 )
 
@@ -77,6 +82,7 @@ fun SettingsScreen(
     onProfileClick: () -> Unit,
     onNetworkClick: () -> Unit = {},
     onDataClick: () -> Unit = {},
+    onLogsClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -181,6 +187,7 @@ fun SettingsScreen(
                         0 -> onProfileClick
                         1 -> onNetworkClick
                         2 -> onDataClick
+                        3 -> onLogsClick
                         else -> { {} }
                     }
                     SettingsSectionRow(

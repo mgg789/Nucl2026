@@ -123,7 +123,8 @@ fun MainScreen(
                     SettingsScreen(
                         onProfileClick = { navController.navigate(Screen.Profile.route) },
                         onNetworkClick = { navController.navigate(Screen.Network.route) },
-                        onDataClick = { navController.navigate(Screen.Data.route) }
+                        onDataClick = { navController.navigate(Screen.Data.route) },
+                        onLogsClick = { navController.navigate(Screen.Logs.route) }
                     )
                 }
             }
