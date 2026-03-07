@@ -66,16 +66,9 @@ cd app
 ```
 Nucl2026/
 ├── README.md
-├── P2P_OFFLINE_MESH_TECH_SPEC_RU.md
 ├── app/
 │   ├── docs/              # Документация
 │   │   └── ARCHITECTURE_AND_REFERENCE.md
-│   ├── ARCHITECTURE_DIAGRAM_RU.md
-│   ├── METRICS_AND_DEMO_PROTOCOL_RU.md
-│   ├── P2P_CRYPTO_PLAYBOOK_RU.md
-│   ├── PROJECT_TECH_GUIDE_RU.md
-│   ├── TECH_FLOW_ON_FINGERS_RU.md
-│   ├── UNIVERSAL_SECURE_MESSENGER_BLUEPRINT_RU.md
 │   ├── scripts/           # Сборка и установка
 │   └── app/
 │       ├── src/main/java/com/peerdone/app/
