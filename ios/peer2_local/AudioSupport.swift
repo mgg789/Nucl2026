@@ -182,3 +182,104 @@ final class VoiceNotePlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
         stop()
     }
 }
+
+final class CallRingbackPlayer {
+    private var player: AVAudioPlayer?
+    private var toneFileURL: URL?
+
+    func start() {
+        guard player?.isPlaying != true else { return }
+
+        if toneFileURL == nil {
+            toneFileURL = generateToneFile()
+        }
+        guard let toneFileURL else { return }
+
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(
+                .playAndRecord,
+                mode: .voiceChat,
+                options: [.allowBluetoothHFP, .allowBluetoothA2DP]
+            )
+            try session.overrideOutputAudioPort(.speaker)
+            try session.setActive(true)
+            let player = try AVAudioPlayer(contentsOf: toneFileURL)
+            player.numberOfLoops = -1
+            player.volume = 0.55
+            player.prepareToPlay()
+            guard player.play() else { return }
+            self.player = player
+        } catch {
+            stop()
+        }
+    }
+
+    func stop() {
+        player?.stop()
+        player = nil
+    }
+
+    private func generateToneFile() -> URL? {
+        let sampleRate = 16_000
+        let totalSeconds = 2.0
+        let totalSamples = Int(Double(sampleRate) * totalSeconds)
+        let frequency = 425.0
+        let amplitude = 0.35
+
+        var pcm = Data(capacity: totalSamples * 2)
+        for i in 0..<totalSamples {
+            let t = Double(i) / Double(sampleRate)
+            let inFirstTone = t < 0.35
+            let inSecondTone = (t >= 0.55 && t < 0.90)
+            let gate = (inFirstTone || inSecondTone) ? 1.0 : 0.0
+            let value = sin(2.0 * Double.pi * frequency * t) * amplitude * gate
+            let sample = Int16(max(-1.0, min(1.0, value)) * Double(Int16.max))
+            var little = sample.littleEndian
+            pcm.append(Data(bytes: &little, count: MemoryLayout<Int16>.size))
+        }
+
+        let wav = buildWavData(sampleRate: sampleRate, channels: 1, bitsPerSample: 16, pcmData: pcm)
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("peer_ringback.wav")
+        do {
+            try wav.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    private func buildWavData(sampleRate: Int, channels: Int, bitsPerSample: Int, pcmData: Data) -> Data {
+        let byteRate = sampleRate * channels * (bitsPerSample / 8)
+        let blockAlign = channels * (bitsPerSample / 8)
+        let riffSize = 36 + pcmData.count
+
+        var data = Data()
+        data.append("RIFF".data(using: .ascii)!)
+        appendUInt32(UInt32(riffSize), to: &data)
+        data.append("WAVE".data(using: .ascii)!)
+        data.append("fmt ".data(using: .ascii)!)
+        appendUInt32(16, to: &data)
+        appendUInt16(1, to: &data)
+        appendUInt16(UInt16(channels), to: &data)
+        appendUInt32(UInt32(sampleRate), to: &data)
+        appendUInt32(UInt32(byteRate), to: &data)
+        appendUInt16(UInt16(blockAlign), to: &data)
+        appendUInt16(UInt16(bitsPerSample), to: &data)
+        data.append("data".data(using: .ascii)!)
+        appendUInt32(UInt32(pcmData.count), to: &data)
+        data.append(pcmData)
+        return data
+    }
+
+    private func appendUInt16(_ value: UInt16, to data: inout Data) {
+        var little = value.littleEndian
+        data.append(Data(bytes: &little, count: MemoryLayout<UInt16>.size))
+    }
+
+    private func appendUInt32(_ value: UInt32, to data: inout Data) {
+        var little = value.littleEndian
+        data.append(Data(bytes: &little, count: MemoryLayout<UInt32>.size))
+    }
+}
