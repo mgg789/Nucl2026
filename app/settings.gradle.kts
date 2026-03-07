@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "app"
+rootProject.name = "peerdone"
 include(":app")
  

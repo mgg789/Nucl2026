@@ -1,40 +1,81 @@
-# Hex.Team Mesh Messenger
+# PeerDone
 
-Децентрализованный мессенджер для обмена сообщениями и файлами без обязательного интернета.
-Проект создан под хакатонный сценарий: работа через P2P-соединения, ретрансляция через соседние узлы, шифрование контента и телеметрия состояния сети.
+**Децентрализованный P2P мессенджер для обмена сообщениями, файлами и звонками без интернета.**
 
-## Что умеет сейчас
+PeerDone позволяет общаться напрямую через локальную сеть или P2P-соединения. Идеально подходит для ситуаций, когда централизованная инфраструктура недоступна: массовые мероприятия, закрытые площадки, аварийные сценарии.
 
-- обнаружение узлов и установка P2P-сессий через Nearby Connections;
-- двусторонний обмен сообщениями;
-- мультихоп-пересылка с `ttl`/`hopCount`;
-- дедупликация сообщений и защита от петель;
-- очередь сообщений, `ACK`, retry и статусы доставки;
-- протокол передачи файлов (meta + chunks + SHA-256);
-- сборка входящего файла из чанков и проверка целостности (checksum);
-- сохранение частично полученных файловых чанков и продолжение после перезапуска приложения;
-- repair-запрос недостающих чанков (`FILE_REPAIR_REQUEST`) и дозагрузка пропусков;
-- карта узлов (gossip topology);
-- базовый call signaling (offer/answer/ice/end);
-- антиспам rate-limit на входящие сообщения (защита от flood);
-- UI в стиле Telegram/Figma с экранами Chats/Calls/Peers/Dev.
+## Возможности
+
+- **Связь без интернета** — приложение работает полностью в локальной сети
+- **Auto-обнаружение** — автоматический поиск устройств в сети
+- **P2P Архитектура** — данные идут напрямую между устройствами
+- **P2P Звонки** — голосовая связь без серверов
+- **Сквозное шифрование** — безопасность на уровне устройств
+- **Мультихоп** — пересылка через промежуточные узлы
+- **Передача файлов** — с контролем целостности и возобновлением
+
+## Скриншоты
+
+Приложение выполнено в соответствии с дизайном Figma:
+- Онбординг с 5 информационными слайдами
+- Настройка профиля с уникальным ID
+- Поиск и добавление друзей
+- Список чатов с фильтрами
+- Экран чата с пузырьковыми сообщениями
+- История звонков
+- Карта сети с топологией
+- Настройки и безопасность
+
+## Архитектура
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           PeerDone App                              │
+├─────────────────────────────────────────────────────────────────────┤
+│  UI Layer (Jetpack Compose)                                         │
+│  ├── OnboardingScreen, ProfileSetupScreen, PeerDiscoveryScreen      │
+│  ├── ChatListScreen, ChatScreen                                     │
+│  ├── CallsScreen, NetworkScreen, SettingsScreen                     │
+│  └── Components (PeerAvatar, MessageBubble, BottomNavBar)           │
+├─────────────────────────────────────────────────────────────────────┤
+│  Navigation (Jetpack Navigation Compose)                            │
+│  └── Screen sealed class, PeerDoneNavGraph                          │
+├─────────────────────────────────────────────────────────────────────┤
+│  Business Logic                                                     │
+│  ├── SendOrchestrator — очередь отправки, retry, выбор транспорта   │
+│  ├── AccessPolicy — политики шифрования и доступа                   │
+│  └── FileTransferPlanner — chunking + SHA-256                       │
+├─────────────────────────────────────────────────────────────────────┤
+│  Data Layer                                                         │
+│  ├── NearbyMeshClient — P2P discovery, соединения, messaging        │
+│  ├── DeviceIdentityStore — идентификация устройства                 │
+│  ├── PreferencesStore — DataStore для настроек                      │
+│  └── IdentityTrustStore — доверенные ключи                          │
+├─────────────────────────────────────────────────────────────────────┤
+│  Transport Layer                                                    │
+│  ├── TransportRegistry — выбор оптимального транспорта              │
+│  ├── NearbyTransportAdapter — Google Nearby Connections             │
+│  └── TransportStrategy — INTERACTIVE / RELIABLE / REALTIME          │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ## Технологии
 
-- Android + Kotlin + Jetpack Compose;
-- Google Play Services Nearby (P2P транспорт);
-- Kotlin Coroutines/Flow;
-- Android Keystore (подпись сообщений);
-- JSON-протокол поверх транспорта.
+- **Android** + Kotlin + Jetpack Compose
+- **Google Play Services Nearby** (P2P транспорт)
+- **Kotlin Coroutines/Flow** для асинхронности
+- **Android Keystore** для подписи сообщений
+- **DataStore Preferences** для хранения настроек
+- **Navigation Compose** для навигации
+
+## Требования
+
+- Android Studio (актуальная версия)
+- Android SDK 36
+- Минимум 2 Android-устройства для демонстрации
+- `adb` в PATH
 
 ## Быстрый запуск
-
-### Требования
-
-- Android Studio актуальной версии;
-- Android SDK 36;
-- минимум 2 Android-устройства для демонстрации mesh;
-- `adb` в `PATH`.
 
 ### Сборка
 
@@ -43,47 +84,70 @@ cd app
 ./gradlew :app:assembleDebug
 ```
 
-### Установка на подключённые устройства
+### Установка на устройства
 
 ```bash
 cd app
 ./scripts/build_and_install_connected.sh
 ```
 
-## Демонстрационный сценарий (обязательная часть ТЗ)
+## Демонстрационный сценарий
 
-1. На двух/трёх устройствах запустить приложение и выдать runtime-permissions.
-2. На вкладке `Peers` убедиться, что узлы обнаружены и соединены.
-3. Отправить текст в обе стороны и показать `ACK`/retry в `Dev`.
-4. Показать мультихоп (через промежуточный узел) по логам и `hopCount`.
-5. Отправить файл (кнопка вложения), показать прогресс чанков и checksum-валидность.
-6. Показать сигналинг звонка (offer/call events) и сетевые метрики в `Dev`.
+1. Запустить приложение на 2-3 устройствах
+2. Пройти онбординг и настроить профиль
+3. На экране "Поиск людей" найти друг друга
+4. Перейти в чаты и обменяться сообщениями
+5. Проверить вкладку "Сеть" для просмотра топологии
+6. Показать мультихоп через третье устройство
 
-## Архитектура (кратко)
+## Критерии хакатона
 
-- `NearbyMeshClient` — discovery, соединения, приём/передача payload, ACK/retry, topology gossip.
-- `SendOrchestrator` — очередь отправки и выбор транспорта по классу доставки.
-- `MeshEnvelope` — унифицированный контейнер сообщения (id, ttl, policy, подпись).
-- `PolicyEngine`/`PolicyKeyService` — правила доступа и ключи для шифрования контента.
-- `FileTransferPlanner` — разбиение файлов на чанки + SHA-256.
-- `MeshAccessScreen` — UI и сценарии демонстрации.
+| Критерий | Реализация |
+|----------|------------|
+| Обнаружение узлов | ✅ Nearby Connections |
+| Установка P2P-сессии | ✅ Автоматическая |
+| Обмен сообщениями | ✅ С ACK и retry |
+| Мультихоп | ✅ TTL + forwarding |
+| Передача файлов | ✅ Chunks + SHA-256 |
+| Real-time звонки | ✅ Signaling layer |
+| Шифрование | ✅ Android Keystore |
+| Аутентификация | ✅ Device ID + подпись |
+| Красивый UI | ✅ По Figma-дизайну |
 
-## Документация в репозитории
+## Структура проекта
 
-- `app/PROJECT_TECH_GUIDE_RU.md` — общий тех-гайд по проекту;
-- `app/TECH_FLOW_ON_FINGERS_RU.md` — поток данных на простом языке;
-- `app/P2P_CRYPTO_PLAYBOOK_RU.md` — практики по crypto/P2P;
-- `app/CRYPTO_KEYS_EXPLAINED_RU.md` — пояснения по ключам;
-- `app/KEYS_AND_ACCESS_OPTIONS_RU.md` — варианты схем доступа;
-- `app/UNIVERSAL_SECURE_MESSENGER_BLUEPRINT_RU.md` — целевая архитектура продукта.
+```
+app/src/main/java/com/peerdone/app/
+├── MainActivity.kt
+├── navigation/
+│   ├── Screen.kt
+│   └── PeerDoneNavGraph.kt
+├── ui/
+│   ├── onboarding/
+│   ├── screens/
+│   ├── components/
+│   └── theme/
+├── data/
+├── domain/
+├── core/
+│   ├── transport/
+│   ├── message/
+│   ├── call/
+│   └── file/
+└── service/
+```
 
-## Логи и метрики
+## Документация
 
-- вкладка `Dev` показывает counters: `seen/dup/fwd/pendingAck/ackOk`, размер очереди, send/network logs;
-- вкладка `Dev` показывает counters: `seen/dup/fwd/pendingAck/ackOk`, RTT `avg/p95`, loss%, размер очереди, send/network logs;
-- вкладка `Dev` содержит fault-контролы для демонстрации отказов: `Relay ON/OFF`, `Loss 0/10/30%`, `Reset metrics`;
-- технический отчёт lint: `app/app/build/reports/lint-results-debug.html`.
+- `app/PROJECT_TECH_GUIDE_RU.md` — технический гайд
+- `app/TECH_FLOW_ON_FINGERS_RU.md` — поток данных
+- `app/P2P_CRYPTO_PLAYBOOK_RU.md` — криптография
+- `app/ARCHITECTURE_DIAGRAM_RU.md` — архитектура
 
-## Текущее ограничение
+## Лицензия
 
-- полноценный медиаканал для real-time голоса/видео и продвинутая методика замеров jitter/loss находятся в активной доработке (сейчас реализован signaling-слой).
+MIT License
+
+---
+
+**PeerDone** — связь без границ и серверов.

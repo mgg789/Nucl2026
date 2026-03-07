@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.app"
+    namespace = "com.peerdone.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.app"
+        applicationId = "com.peerdone.app"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
@@ -49,7 +49,10 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.datastore.preferences)
     implementation(libs.play.services.nearby)
+    implementation("io.getstream:stream-webrtc-android:1.3.8")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
