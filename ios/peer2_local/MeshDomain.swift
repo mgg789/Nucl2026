@@ -50,10 +50,12 @@ struct AccessPolicy: Codable, Equatable {
     }
 
     static func fromJSONObject(_ object: [String: Any]) -> AccessPolicy {
-        let include = object["includeOrgs"] as? [String] ?? []
-        let exclude = object["excludeOrgs"] as? [String] ?? []
-        let max = object["maxLevel"] as? Int
-        let min = object["minLevel"] as? Int
+        let includeAny = object["includeOrgs"] as? [Any]
+        let include = includeAny?.compactMap { $0 as? String } ?? (object["includeOrgs"] as? [String]) ?? []
+        let excludeAny = object["excludeOrgs"] as? [Any]
+        let exclude = excludeAny?.compactMap { $0 as? String } ?? (object["excludeOrgs"] as? [String]) ?? []
+        let max = (object["maxLevel"] as? NSNumber)?.intValue ?? object["maxLevel"] as? Int
+        let min = (object["minLevel"] as? NSNumber)?.intValue ?? object["minLevel"] as? Int
         return AccessPolicy(maxLevel: max, minLevel: min, includeOrgs: include, excludeOrgs: exclude)
     }
 
@@ -93,6 +95,8 @@ struct MeshEnvelope {
     var senderLevel: Int
     var senderPublicKeyBase64: String
     var keyId: String
+    /** Кому адресовано (1:1); nil = broadcast. Совместимость с Android. */
+    var recipientUserId: String?
     var timestampMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     var ttl: Int = 3
     var hopCount: Int = 0
@@ -143,6 +147,7 @@ struct MeshEnvelope {
             "signatureBase64": signatureBase64,
         ]
         object["ackForId"] = ackForId
+        object["recipientUserId"] = recipientUserId ?? ""
         return try? JSONSerialization.data(withJSONObject: object, options: [])
     }
 
@@ -153,12 +158,8 @@ struct MeshEnvelope {
               let type = MeshMessageType(rawValue: typeString),
               let senderUserId = raw["senderUserId"] as? String,
               let senderOrgId = raw["senderOrgId"] as? String,
-              let senderLevel = raw["senderLevel"] as? Int,
               let senderPublicKeyBase64 = raw["senderPublicKeyBase64"] as? String,
               let keyId = raw["keyId"] as? String,
-              let timestampMs = raw["timestampMs"] as? Int64 ?? (raw["timestampMs"] as? NSNumber)?.int64Value,
-              let ttl = raw["ttl"] as? Int,
-              let hopCount = raw["hopCount"] as? Int,
               let ivBase64 = raw["ivBase64"] as? String,
               let cipherTextBase64 = raw["cipherTextBase64"] as? String,
               let policyObject = raw["policy"] as? [String: Any],
@@ -166,7 +167,12 @@ struct MeshEnvelope {
         else {
             return nil
         }
+        let senderLevel = (raw["senderLevel"] as? NSNumber)?.intValue ?? (raw["senderLevel"] as? Int) ?? 0
+        let timestampMs = (raw["timestampMs"] as? NSNumber)?.int64Value ?? (raw["timestampMs"] as? Int64) ?? 0
+        let ttl = (raw["ttl"] as? NSNumber)?.intValue ?? (raw["ttl"] as? Int) ?? 3
+        let hopCount = (raw["hopCount"] as? NSNumber)?.intValue ?? (raw["hopCount"] as? Int) ?? 0
 
+        let recipient = (raw["recipientUserId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return MeshEnvelope(
             id: id,
             type: type,
@@ -176,6 +182,7 @@ struct MeshEnvelope {
             senderLevel: senderLevel,
             senderPublicKeyBase64: senderPublicKeyBase64,
             keyId: keyId,
+            recipientUserId: (recipient?.isEmpty ?? true) ? nil : recipient,
             timestampMs: timestampMs,
             ttl: ttl,
             hopCount: hopCount,
@@ -186,7 +193,7 @@ struct MeshEnvelope {
         )
     }
 
-    static func createChat(sender: LocalIdentity, senderPublicKeyBase64: String, keyId: String, keyBytes: Data, messageText: String, policy: AccessPolicy, ttl: Int = 3) -> MeshEnvelope? {
+    static func createChat(sender: LocalIdentity, senderPublicKeyBase64: String, keyId: String, keyBytes: Data, messageText: String, policy: AccessPolicy, ttl: Int = 3, recipientUserId: String? = nil) -> MeshEnvelope? {
         guard let encrypted = MeshCrypto.encryptWithKey(messageText: messageText, keyBytes: keyBytes) else {
             return nil
         }
@@ -198,11 +205,32 @@ struct MeshEnvelope {
             senderLevel: sender.level,
             senderPublicKeyBase64: senderPublicKeyBase64,
             keyId: keyId,
+            recipientUserId: recipientUserId,
             ttl: ttl,
             hopCount: 0,
             ivBase64: encrypted.ivBase64,
             cipherTextBase64: encrypted.cipherTextBase64,
             policy: policy,
+            signatureBase64: ""
+        )
+    }
+
+    static func createTopology(sender: LocalIdentity, senderPublicKeyBase64: String, topologyJson: String, ttl: Int = 2) -> MeshEnvelope? {
+        guard let encrypted = MeshCrypto.encryptControl(plainText: topologyJson) else { return nil }
+        return MeshEnvelope(
+            type: .topology,
+            ackForId: nil,
+            senderUserId: sender.userId,
+            senderOrgId: sender.orgId,
+            senderLevel: sender.level,
+            senderPublicKeyBase64: senderPublicKeyBase64,
+            keyId: MeshCrypto.controlKeyID,
+            recipientUserId: nil,
+            ttl: ttl,
+            hopCount: 0,
+            ivBase64: encrypted.ivBase64,
+            cipherTextBase64: encrypted.cipherTextBase64,
+            policy: AccessPolicy(),
             signatureBase64: ""
         )
     }
@@ -219,6 +247,7 @@ struct MeshEnvelope {
             senderLevel: sender.level,
             senderPublicKeyBase64: senderPublicKeyBase64,
             keyId: MeshCrypto.controlKeyID,
+            recipientUserId: nil,
             ttl: 1,
             hopCount: 0,
             ivBase64: control.ivBase64,
@@ -379,6 +408,8 @@ enum MeshCrypto {
 }
 
 enum PolicyKeyService {
+    private static let recipientKeyPrefix = "recipient:"
+    private static let recipientMaster = "peerdone-direct-msg-v1"
     private static let orgMasters: [String: String] = [
         "org_city": "master-city-v1-3bc9c42f",
         "org_med": "master-med-v1-8aa0f90c",
@@ -394,7 +425,24 @@ enum PolicyKeyService {
         return (keyID, deriveKey(keyID: keyID))
     }
 
+    /// Ключ только для получателя (1:1); совместимость с Android.
+    static func buildSendKeyForRecipient(recipientUserId: String) -> (String, Data) {
+        let norm = recipientUserId.split(separator: "|").first.map(String.init)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? recipientUserId
+        let keyId = "\(recipientKeyPrefix)\(norm)"
+        let material = "\(recipientMaster)|\(norm)"
+        let digest = SHA256.hash(data: Data(material.utf8))
+        return (keyId, Data(digest))
+    }
+
     static func resolveReadKey(identity: LocalIdentity, keyID: String) -> Data? {
+        if keyID.hasPrefix(recipientKeyPrefix) {
+            let recipientId = String(keyID.dropFirst(recipientKeyPrefix.count)).split(separator: "|").first.map(String.init)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let myId = identity.userId.split(separator: "|").first.map(String.init)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? identity.userId
+            guard recipientId == myId else { return nil }
+            let material = "\(recipientMaster)|\(myId)"
+            let digest = SHA256.hash(data: Data(material.utf8))
+            return Data(digest)
+        }
         guard isKeyAllowed(identity: identity, keyID: keyID) else {
             return nil
         }

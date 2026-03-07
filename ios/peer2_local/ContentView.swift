@@ -1,6 +1,8 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import Foundation
+import WebRTC
 
 private enum MessengerSection: String, CaseIterable {
     case chats = "Чаты"
@@ -264,7 +266,15 @@ private struct MessengerRootView: View {
     private var chatPeerIds: [String] {
         let fromMessages = Array(appState.privateChats.keys)
         let online = appState.peers.map(\.userId)
-        return Array(Set(fromMessages + online)).sorted()
+        let peers = Array(Set(fromMessages + online))
+        return peers.sorted { lhs, rhs in
+            let lhsTs = appState.privateChats[lhs]?.last?.timestampMs ?? 0
+            let rhsTs = appState.privateChats[rhs]?.last?.timestampMs ?? 0
+            if lhsTs != rhsTs {
+                return lhsTs > rhsTs
+            }
+            return appState.displayName(for: lhs).localizedCaseInsensitiveCompare(appState.displayName(for: rhs)) == .orderedAscending
+        }
     }
 }
 
@@ -1187,6 +1197,7 @@ private struct SettingsView: View {
                     profileCard
                     accountCard
                     networkCard
+                    metricsCard
                     dataCard
                     logsCard
                 }
@@ -1296,6 +1307,20 @@ private struct SettingsView: View {
         .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
     }
 
+    private var metricsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Метрики").font(.headline)
+            metricRow(label: "RTT", value: formatMs(appState.rttMs))
+            metricRow(label: "P95 RTT", value: formatMs(appState.p95Ms))
+            metricRow(label: "Transferred data", value: formatBytes(appState.transferredBytes))
+            Text("Сэмплов RTT: \(appState.rttSamplesCount)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+    }
+
     private var logsCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Сетевой лог").font(.headline)
@@ -1331,6 +1356,19 @@ private struct SettingsView: View {
         }
     }
 
+    private func metricRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+    }
+
     private func infoRow(label: String, value: String, infoAction: @escaping () -> Void) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
@@ -1347,6 +1385,15 @@ private struct SettingsView: View {
         }
         .padding(10)
         .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func formatMs(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        return "\(Int(value.rounded())) мс"
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .binary)
     }
 }
 
@@ -1394,49 +1441,136 @@ private struct ActiveCallOverlay: View {
     @ObservedObject var appState: MeshAppState
 
     var body: some View {
-        Color.black.opacity(0.52)
-            .ignoresSafeArea()
-            .overlay {
-                VStack(spacing: 14) {
-                    Text(call.isVideo ? "Видео звонок" : "Аудио звонок")
-                        .font(.headline)
-                    Text(appState.displayName(for: call.peerId))
-                        .font(.title3.bold())
-                    Text(callDuration)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+        ZStack(alignment: .bottom) {
+            if let remoteTrack = appState.remoteCallVideoTrack {
+                RTCMetalVideoTrackView(track: remoteTrack)
+                    .ignoresSafeArea()
+            } else {
+                Color.black.opacity(0.56)
+                    .ignoresSafeArea()
+                    .overlay(
+                        Image(systemName: "person.crop.square")
+                            .font(.system(size: 58, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.18))
+                    )
+            }
 
-                    HStack(spacing: 20) {
-                        callControl(system: "mic.slash.fill", color: .orange)
-                        callControl(system: "speaker.wave.2.fill", color: .blue)
-                        callControl(system: "video.fill", color: .purple)
+            if let localTrack = appState.localCallVideoTrack {
+                RTCMetalVideoTrackView(track: localTrack)
+                    .frame(width: 124, height: 170)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.34), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.28), radius: 8, y: 4)
+                    .padding(.trailing, 14)
+                    .padding(.bottom, 232)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+
+            VStack(spacing: 12) {
+                Text(isVideoMode ? "Видео звонок" : "Аудио звонок")
+                    .font(.headline)
+                Text(appState.displayName(for: call.peerId))
+                    .font(.title3.bold())
+                Text(callDuration)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 20) {
+                    callControl(
+                        system: appState.isCallMicMuted ? "mic.slash.fill" : "mic.fill",
+                        color: .orange,
+                        isSelected: appState.isCallMicMuted
+                    ) {
+                        appState.toggleCallMicrophone()
                     }
-
-                    Button {
-                        appState.endActiveCall()
-                    } label: {
-                        Label("Завершить", systemImage: "phone.down.fill")
-                            .padding(.horizontal, 22)
-                            .padding(.vertical, 10)
-                            .background(Color.red, in: Capsule())
+                    callControl(
+                        system: appState.isCallSpeakerEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill",
+                        color: .blue,
+                        isSelected: appState.isCallSpeakerEnabled
+                    ) {
+                        appState.toggleCallSpeaker()
+                    }
+                    callControl(
+                        system: appState.isCallVideoEnabled ? "video.fill" : "video.slash.fill",
+                        color: .purple,
+                        isSelected: appState.isCallVideoEnabled
+                    ) {
+                        appState.toggleCallVideo()
                     }
                 }
-                .padding(24)
-                .background(Color(red: 0.10, green: 0.12, blue: 0.18), in: RoundedRectangle(cornerRadius: 20))
-                .padding(24)
+
+                Button {
+                    appState.endActiveCall()
+                } label: {
+                    Label("Завершить", systemImage: "phone.down.fill")
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 10)
+                        .background(Color.red, in: Capsule())
+                }
             }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 16)
+            .padding(.bottom, 18)
+            .background(Color(red: 0.10, green: 0.12, blue: 0.18).opacity(0.86), in: RoundedRectangle(cornerRadius: 20))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 22)
+        }
     }
 
-    private func callControl(system: String, color: Color) -> some View {
-        Image(systemName: system)
-            .frame(width: 44, height: 44)
-            .background(color.opacity(0.22), in: Circle())
+    private func callControl(system: String, color: Color, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .frame(width: 44, height: 44)
+                .background(color.opacity(isSelected ? 0.34 : 0.18), in: Circle())
+                .overlay(
+                    Circle()
+                        .stroke(color.opacity(isSelected ? 0.95 : 0.38), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     private var callDuration: String {
         let delta = max(0, Int64(Date().timeIntervalSince1970 * 1000) - call.startedAtMs)
         let sec = Int(delta / 1000)
         return String(format: "%02d:%02d", sec / 60, sec % 60)
+    }
+
+    private var isVideoMode: Bool {
+        appState.isCallVideoEnabled || appState.remoteCallVideoTrack != nil || call.isVideo
+    }
+}
+
+private struct RTCMetalVideoTrackView: UIViewRepresentable {
+    let track: RTCVideoTrack
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> RTCMTLVideoView {
+        let view = RTCMTLVideoView(frame: .zero)
+        view.contentMode = .scaleAspectFill
+        track.add(view)
+        context.coordinator.currentTrack = track
+        return view
+    }
+
+    func updateUIView(_ uiView: RTCMTLVideoView, context: Context) {
+        if context.coordinator.currentTrack?.trackId != track.trackId {
+            context.coordinator.currentTrack?.remove(uiView)
+            track.add(uiView)
+            context.coordinator.currentTrack = track
+        }
+    }
+
+    static func dismantleUIView(_ uiView: RTCMTLVideoView, coordinator: Coordinator) {
+        coordinator.currentTrack?.remove(uiView)
+        coordinator.currentTrack = nil
+    }
+
+    final class Coordinator {
+        var currentTrack: RTCVideoTrack?
     }
 }
 
