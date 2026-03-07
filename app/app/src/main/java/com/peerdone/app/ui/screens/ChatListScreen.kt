@@ -51,6 +51,7 @@ import com.peerdone.app.ui.theme.PeerDoneLightGray
 import com.peerdone.app.ui.theme.PeerDoneOnline
 import com.peerdone.app.ui.theme.PeerDonePrimary
 import com.peerdone.app.ui.theme.PeerDoneTextMuted
+import com.peerdone.app.ui.theme.PeerDoneTextPrimary
 import com.peerdone.app.ui.theme.PeerDoneWhite
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -203,14 +204,14 @@ fun ChatListScreen(
                             Spacer(modifier = Modifier.height(20.dp))
                             Text(
                                 text = "Нет чатов",
-                                color = PeerDoneWhite,
+                                color = PeerDoneTextPrimary,
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.Medium
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 text = "Найдите людей в сети чтобы начать общение",
-                                color = PeerDoneGray,
+                                color = PeerDoneTextMuted,
                                 fontSize = 14.sp
                             )
                         }
@@ -314,7 +315,7 @@ private fun ChatPreviewCard(
                 text = chat.displayName,
                 fontWeight = FontWeight.Normal,
                 fontSize = 16.sp,
-                color = PeerDoneWhite,
+                color = PeerDoneTextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -350,7 +351,7 @@ private fun ChatPreviewCard(
                 ) {
                     Text(
                         text = "${chat.unreadCount}",
-                        color = PeerDoneLightGray,
+                        color = PeerDoneWhite,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
                     )

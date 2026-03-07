@@ -22,8 +22,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.peerdone.app.R
 import com.peerdone.app.navigation.BottomNavItem
-import com.peerdone.app.ui.theme.PeerDoneBackground
-import com.peerdone.app.ui.theme.PeerDoneOnline
+import com.peerdone.app.ui.theme.PeerDoneNavSelectedBg
+import com.peerdone.app.ui.theme.PeerDoneNavUnselected
+import com.peerdone.app.ui.theme.PeerDoneSurface
 import com.peerdone.app.ui.theme.PeerDoneWhite
 
 @Composable
@@ -34,7 +35,7 @@ fun PeerDoneBottomNavBar(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = PeerDoneBackground,
+        color = PeerDoneSurface,
         shape = RoundedCornerShape(topStart = 35.dp, topEnd = 35.dp),
         shadowElevation = 8.dp
     ) {
@@ -65,8 +66,8 @@ private fun NavBarItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val backgroundColor = if (isSelected) PeerDoneOnline else Color.Transparent
-    val iconTint = if (isSelected) PeerDoneBackground else PeerDoneWhite
+    val backgroundColor = if (isSelected) PeerDoneNavSelectedBg else Color.Transparent
+    val iconTint = if (isSelected) PeerDoneWhite else PeerDoneNavUnselected
 
     Box(
         modifier = modifier

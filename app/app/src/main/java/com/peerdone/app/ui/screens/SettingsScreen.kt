@@ -41,9 +41,11 @@ import com.peerdone.app.R
 import com.peerdone.app.data.DeviceIdentityStore
 import com.peerdone.app.data.PreferencesStore
 import com.peerdone.app.ui.theme.PeerDoneBackground
-import com.peerdone.app.ui.theme.PeerDoneDarkGray
-import com.peerdone.app.ui.theme.PeerDoneGray
 import com.peerdone.app.ui.theme.PeerDoneInputFieldSolid
+import com.peerdone.app.ui.theme.PeerDonePrimary
+import com.peerdone.app.ui.theme.PeerDoneTextMuted
+import com.peerdone.app.ui.theme.PeerDoneTextPrimary
+import com.peerdone.app.ui.theme.PeerDoneTextSecondary
 import com.peerdone.app.ui.theme.PeerDoneWhite
 
 data class SettingsSection(
@@ -129,7 +131,7 @@ fun SettingsScreen(
                     modifier = Modifier
                         .size(56.dp)
                         .clip(CircleShape)
-                        .background(PeerDoneDarkGray),
+                        .background(PeerDonePrimary),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -145,19 +147,19 @@ fun SettingsScreen(
                         text = "Профиль",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Medium,
-                        color = PeerDoneWhite
+                        color = PeerDoneTextPrimary
                     )
                     Text(
                         text = displayName,
                         fontSize = 14.sp,
-                        color = PeerDoneGray
+                        color = PeerDoneTextSecondary
                     )
                 }
                 Icon(
                     painter = painterResource(id = R.drawable.ic_chevron_right),
                     contentDescription = null,
                     modifier = Modifier.size(24.dp),
-                    tint = PeerDoneGray
+                    tint = PeerDoneTextMuted
                 )
             }
         }
@@ -181,7 +183,7 @@ fun SettingsScreen(
                         HorizontalDivider(
                             modifier = Modifier.padding(start = 60.dp, end = 20.dp),
                             thickness = 0.5.dp,
-                            color = PeerDoneGray.copy(alpha = 0.3f)
+                            color = PeerDoneTextMuted.copy(alpha = 0.3f)
                         )
                     }
                 }
@@ -193,7 +195,7 @@ fun SettingsScreen(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(24.dp),
-            color = PeerDoneInputFieldSolid.copy(alpha = 0.5f)
+            color = PeerDoneInputFieldSolid.copy(alpha = 0.8f)
         ) {
             Column(
                 modifier = Modifier.padding(20.dp)
@@ -205,14 +207,14 @@ fun SettingsScreen(
                         painter = painterResource(id = R.drawable.ic_lock),
                         contentDescription = null,
                         modifier = Modifier.size(24.dp),
-                        tint = PeerDoneDarkGray
+                        tint = PeerDonePrimary
                     )
                     Spacer(modifier = Modifier.width(12.dp))
                     Text(
                         text = "Сквозное шифрование",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = PeerDoneWhite
+                        color = PeerDoneTextPrimary
                     )
                 }
 
@@ -221,7 +223,7 @@ fun SettingsScreen(
                 Text(
                     text = "PeerDone использует сквозное шифрование для всех сообщений. Это означает, что только вы и получатель можете читать содержимое.",
                     fontSize = 13.sp,
-                    color = PeerDoneGray,
+                    color = PeerDoneTextSecondary,
                     lineHeight = 20.sp
                 )
 
@@ -230,7 +232,7 @@ fun SettingsScreen(
                 Text(
                     text = "Сервер физически не может сохранять данные чатов, аккаунтов и звонков.",
                     fontSize = 13.sp,
-                    color = PeerDoneDarkGray,
+                    color = PeerDoneTextMuted,
                     lineHeight = 20.sp
                 )
             }
@@ -241,7 +243,7 @@ fun SettingsScreen(
         Text(
             text = "PeerDone v1.0.0",
             fontSize = 12.sp,
-            color = PeerDoneGray,
+            color = PeerDoneTextMuted,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth()
         )
@@ -267,7 +269,7 @@ private fun SettingsSectionRow(
             painter = painterResource(id = section.iconResId),
             contentDescription = null,
             modifier = Modifier.size(24.dp),
-            tint = PeerDoneDarkGray
+            tint = PeerDonePrimary
         )
 
         Spacer(modifier = Modifier.width(16.dp))
@@ -277,13 +279,13 @@ private fun SettingsSectionRow(
                 text = section.title,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Medium,
-                color = PeerDoneDarkGray
+                color = PeerDoneTextPrimary
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = section.subtitle,
                 fontSize = 13.sp,
-                color = PeerDoneGray
+                color = PeerDoneTextSecondary
             )
         }
 
@@ -291,7 +293,7 @@ private fun SettingsSectionRow(
             painter = painterResource(id = R.drawable.ic_chevron_right),
             contentDescription = null,
             modifier = Modifier.size(24.dp),
-            tint = PeerDoneGray
+            tint = PeerDoneTextMuted
         )
     }
 }

@@ -2,59 +2,71 @@ package com.peerdone.app.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// PeerDone color palette - white theme
+// PeerDone — современная бело-розово-фиолетовая палитра с хорошим контрастом
 
 // Backgrounds
-val PeerDoneBackground = Color(0xFFFFFFFF)
-val PeerDoneSurface = Color(0xFFFAFAFA)
-val PeerDoneSurfaceLow = Color(0xFFF5F5F5)
-val PeerDoneSurfaceLight = Color(0xFFF8F8F8)
-val PeerDoneScreenBg = Color(0xFFEEEEEE)
+val PeerDoneBackground = Color(0xFFFFFBFE)
+val PeerDoneSurface = Color(0xFFFFFFFF)
+val PeerDoneSurfaceLow = Color(0xFFF8F5FC)
+val PeerDoneSurfaceLight = Color(0xFFFDF8FC)
+val PeerDoneScreenBg = Color(0xFFF5F2F8)
 
-// Primary colors
-val PeerDonePrimary = Color(0xFF836EF7)
-val PeerDonePrimaryVariant = Color(0xFF8F82DB)
-val PeerDonePrimaryLight = Color(0xFF8C7ED7)
-val PeerDonePrimaryContainer = Color(0xFF6981D9)
+// Primary — фиолетовый
+val PeerDonePrimary = Color(0xFF7C5CBF)
+val PeerDonePrimaryVariant = Color(0xFF9B7ED9)
+val PeerDonePrimaryLight = Color(0xFFB8A0E0)
+val PeerDonePrimaryContainer = Color(0xFFE8DEFF)
 
-// Status colors
-val PeerDoneOnline = Color(0xFF16C17B)
-val PeerDoneError = Color(0xFFFF4545)
-val PeerDoneBlue = Color(0xFF2C99DC)
+// Акцент розовый (для градиентов и выделений)
+val PeerDonePink = Color(0xFFE8A0C8)
+val PeerDonePinkLight = Color(0xFFF5D6E8)
 
-// Neutral colors
+// Status
+val PeerDoneOnline = Color(0xFF2E9D6E)
+val PeerDoneError = Color(0xFFD9384A)
+val PeerDoneBlue = Color(0xFF4A7FC8)
+
+// Текст — всегда читаемый на светлом фоне
+val PeerDoneTextPrimary = Color(0xFF1C1B1F)
+val PeerDoneTextSecondary = Color(0xFF49454F)
+val PeerDoneTextMuted = Color(0xFF6B6B6E)
+val PeerDoneTextDark = PeerDoneTextPrimary
 val PeerDoneWhite = Color(0xFFFFFFFF)
-val PeerDoneLightGray = Color(0xFFF3F3F3)
-val PeerDoneGray = Color(0xFF838383)
-val PeerDoneDarkGray = Color(0xFF555555)
-val PeerDoneTextDark = Color(0xFF2D2D2D)
-val PeerDoneTextMuted = Color(0xFF565555)
-val PeerDoneInputGray = Color(0xFFE3E3E3)
-val PeerDoneDivider = Color(0xFFE8E8E8)
-val PeerDoneGrayLight = Color(0xFFC3C3C3)
-val PeerDoneGrayMedium = Color(0xFFABABAB)
-val PeerDoneInputFieldSolid = Color(0xFFE3E3E3)
 
-// Chat specific
-val PeerDoneSentBubble = Color(0xFFE8E6F5)
-val PeerDoneReceivedBubble = Color(0xFFF0F0F0)
-val PeerDoneChatHeader = Color(0xFFF5F5F5)
+// Нейтральные для границ и фонов карточек
+val PeerDoneLightGray = Color(0xFFF2F0F8)
+val PeerDoneGray = Color(0xFF79747E)
+val PeerDoneDarkGray = Color(0xFF49454F)
+val PeerDoneInputGray = Color(0xFFE7E0EC)
+val PeerDoneDivider = Color(0xFFE0DAE8)
+val PeerDoneGrayLight = Color(0xFFCAC4D0)
+val PeerDoneGrayMedium = Color(0xFF9E9AA5)
+val PeerDoneInputFieldSolid = Color(0xFFF2EFF8)
+
+// Нижняя навигация: невыбранная иконка хорошо видна
+val PeerDoneNavUnselected = Color(0xFF79747E)
+val PeerDoneNavSelectedBg = PeerDonePrimary
+
+// Chat
+val PeerDoneSentBubble = Color(0xFFE8DEFF)
+val PeerDoneReceivedBubble = Color(0xFFF2EFF8)
+val PeerDoneChatHeader = Color(0xFFF8F5FC)
 val PeerDoneInputField = Color(0x33999999)
 
 // Stop button
-val PeerDoneStopButton = Color(0xFFFFC4C4)
-val PeerDoneStopButtonText = Color(0xFFFF7E7E)
+val PeerDoneStopButton = Color(0xFFFCE4EC)
+val PeerDoneStopButtonText = Color(0xFFC2185B)
 
 // Badge
-val PeerDoneBadge = Color(0xFF836EF7)
-val PeerDoneBadgeLight = Color(0xFFBAB6FF)
+val PeerDoneBadge = Color(0xFF7C5CBF)
+val PeerDoneBadgeLight = Color(0xFFD4C4F0)
 
-// Gradients
-val PeerDoneGradientPurple = Color(0xFFAE76E9)
-val PeerDoneGradientBlue = Color(0xFFA5B4E9)
+// Gradients (бело-розово-фиолетовые)
+val PeerDoneGradientPurple = Color(0xFF9B7ED9)
+val PeerDoneGradientBlue = Color(0xFFB8A0E0)
 val PeerDoneGradientStart = Color(0xFFAE76E9)
-val PeerDoneGradientEnd = Color(0xFFA5B4E9)
+val PeerDoneGradientEnd = Color(0xFFE8A0C8)
 
 // Chips
-val PeerDoneChipActive = Color(0xFF8F82DB)
-val PeerDoneChipInactive = Color(0xFF838383)
+val PeerDoneChipActive = Color(0xFF7C5CBF)
+val PeerDoneChipInactive = Color(0xFF79747E)
