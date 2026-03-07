@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.peerdone.app.R
 import com.peerdone.app.data.CallHistoryStore
+import com.peerdone.app.data.ChatHistoryStore
 import com.peerdone.app.data.IncomingFileStore
 import com.peerdone.app.data.MessageQueueStore
 import com.peerdone.app.ui.theme.PeerDoneBackground
@@ -57,15 +58,28 @@ fun DataScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val callHistoryStore = remember { CallHistoryStore(context) }
+    val chatHistoryStore = remember { ChatHistoryStore(context) }
     val messageQueueStore = remember { MessageQueueStore(context) }
     val incomingFileStore = remember { IncomingFileStore(context) }
     val callHistory by callHistoryStore.history.collectAsState(initial = emptyList())
+    val chatByPeer by chatHistoryStore.byPeer.collectAsState(initial = emptyMap())
     var cacheSizeBytes by remember { mutableStateOf<Long?>(null) }
+    var incomingFileStats by remember { mutableStateOf<Pair<Int, Long>?>(null) }
     var clearedMessage by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         cacheSizeBytes = withContext(Dispatchers.IO) {
             context.cacheDir.walkTopDown().sumOf { it.length() }
+        }
+    }
+    LaunchedEffect(Unit) {
+        incomingFileStats = withContext(Dispatchers.IO) {
+            val list = incomingFileStore.loadAll()
+            val count = list.size
+            val totalBytes = list.sumOf { f ->
+                f.meta?.totalBytes ?: f.chunks.values.sumOf { it.size.toLong() }
+            }
+            count to totalBytes
         }
     }
 
@@ -113,6 +127,27 @@ fun DataScreen(
             color = PeerDoneInputFieldSolid
         ) {
             Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                DataActionRow(
+                    iconResId = R.drawable.ic_storage,
+                    title = "История чатов",
+                    subtitle = run {
+                        val chats = chatByPeer.size
+                        val messages = chatByPeer.values.sumOf { it.size }
+                        if (messages == 0) "Нет сохранённых сообщений" else "Чатов: $chats, сообщений: $messages"
+                    },
+                    actionLabel = "Очистить",
+                    onClick = {
+                        scope.launch {
+                            chatHistoryStore.clearAll()
+                            clearedMessage = "История чатов очищена. Сообщения снова придут через сеть при обмене с узлами."
+                        }
+                    }
+                )
+                HorizontalDivider(
+                    modifier = Modifier.padding(start = 60.dp, end = 20.dp),
+                    thickness = 0.5.dp,
+                    color = PeerDoneGray.copy(alpha = 0.3f)
+                )
                 DataActionRow(
                     iconResId = R.drawable.ic_storage,
                     title = "История звонков",
@@ -167,12 +202,25 @@ fun DataScreen(
                 )
                 DataActionRow(
                     iconResId = R.drawable.ic_storage,
-                    title = "Загруженные файлы",
-                    subtitle = "Временные данные приёма файлов",
+                    title = "Временные файлы приёма",
+                    subtitle = incomingFileStats?.let { (count, bytes) ->
+                        if (count == 0) "Нет несохранённых файлов"
+                        else {
+                            val sizeStr = when {
+                                bytes < 1024 -> "$bytes Б"
+                                bytes < 1024 * 1024 -> "${bytes / 1024} КБ"
+                                else -> String.format("%.1f МБ", bytes / (1024.0 * 1024.0))
+                            }
+                            "Файлов: $count, ≈ $sizeStr. Буфер приёма по сети."
+                        }
+                    } ?: "…",
                     actionLabel = "Очистить",
                     onClick = {
-                        incomingFileStore.clearAll()
-                        clearedMessage = "Данные загруженных файлов очищены."
+                        scope.launch {
+                            incomingFileStore.clearAll()
+                            incomingFileStats = 0 to 0L
+                            clearedMessage = "Временные данные приёма файлов очищены."
+                        }
                     }
                 )
             }
@@ -180,7 +228,7 @@ fun DataScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
         Text(
-            text = "Сообщения чатов не хранятся на устройстве постоянно — они приходят через mesh-сеть. Очистка затрагивает только локальные кэши и историю звонков.",
+            text = "Сообщения чатов хранятся локально для отображения; при очистке истории они снова подгрузятся с узлов сети при обмене. Очистка затрагивает только локальные кэши, историю звонков и временные файлы приёма.",
             fontSize = 13.sp,
             color = PeerDoneGray,
             lineHeight = 20.sp,

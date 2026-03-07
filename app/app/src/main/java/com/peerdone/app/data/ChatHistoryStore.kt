@@ -102,6 +102,12 @@ class ChatHistoryStore(context: Context) {
         persist(updated)
     }
 
+    /** Очищает всю локальную историю чатов по всем собеседникам. */
+    fun clearAll() {
+        _byPeer.value = emptyMap()
+        persist(emptyMap())
+    }
+
     private fun loadAll(): Map<String, List<StoredChatMessage>> {
         val raw = prefs.getString(KEY_DATA, null) ?: return emptyMap()
         return runCatching {
