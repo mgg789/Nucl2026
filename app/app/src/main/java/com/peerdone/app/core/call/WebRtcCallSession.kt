@@ -104,13 +104,14 @@ class WebRtcCallSession(
         }
     }
 
+    /**
+     * Локальная сеть (Nearby/Wi-Fi Direct): пустой iceServers — WebRTC собирает только host-кандидаты,
+     * соединение P2P без интернета и STUN/TURN. Для LAN/Wi-Fi Direct host-кандидатов достаточно.
+     */
     private fun ensurePeerConnection() {
         if (peerConnection != null) return
         val factory = peerConnectionFactory ?: return
-        val iceServers = listOf(
-            org.webrtc.PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            org.webrtc.PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
-        )
+        val iceServers = emptyList<org.webrtc.PeerConnection.IceServer>()
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
@@ -183,6 +184,10 @@ class WebRtcCallSession(
     fun setLocalVideoSink(sink: VideoSink?) {
         localVideoSink = sink
         executor.execute { localVideoTrack?.addSink(sink) }
+    }
+
+    fun setMuted(muted: Boolean) {
+        executor.execute { localAudioTrack?.setEnabled(!muted) }
     }
 
     private fun createAnswer() {
