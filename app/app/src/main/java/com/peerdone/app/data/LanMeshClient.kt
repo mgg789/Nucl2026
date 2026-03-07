@@ -81,6 +81,10 @@ class LanMeshClient(
     /** Косвенные пиры (из TOPOLOGY): userId -> userId реле (прямой пир, через которого слать). */
     private val relayPeerByIndirectUserId = ConcurrentHashMap<String, String>()
     private var topologySyncJob: Job? = null
+
+    /** В режиме «все протоколы» — объединённый список userId по всем транспортам для TOPOLOGY. */
+    @Volatile
+    var topologyPeerListProvider: (() -> List<String>)? = null
     private var sentCount = 0
     private var ackReceivedCount = 0
     private var lostCount = 0
@@ -731,7 +735,7 @@ class LanMeshClient(
 
     private fun buildTopologyPayload(): String {
         val me = localIdentity?.userId ?: "unknown"
-        val peers = peersByUserId.keys.toList()
+        val peers = topologyPeerListProvider?.invoke() ?: peersByUserId.keys.toList()
         return JSONObject()
             .put("sourceNode", me)
             .put("directPeers", org.json.JSONArray(peers))

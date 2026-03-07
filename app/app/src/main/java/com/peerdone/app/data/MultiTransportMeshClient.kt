@@ -69,6 +69,10 @@ class MultiTransportMeshClient(
         wifiDirect.start(identity, displayName)
         lan.start(identity, displayName)
 
+        val mergedPeerListProvider: () -> List<String> = { _connectedPeerInfos.value.map { it.userId } }
+        nearby.topologyPeerListProvider = mergedPeerListProvider
+        lan.topologyPeerListProvider = mergedPeerListProvider
+
         mergeParent?.cancel()
         val parent = Job()
         mergeParent = parent
@@ -149,6 +153,8 @@ class MultiTransportMeshClient(
     fun stop() {
         mergeParent?.cancel()
         mergeParent = null
+        nearby.topologyPeerListProvider = null
+        lan.topologyPeerListProvider = null
         nearby.stop()
         wifiDirect.stop()
         lan.stop()

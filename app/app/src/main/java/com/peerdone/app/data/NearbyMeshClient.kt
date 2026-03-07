@@ -126,7 +126,13 @@ class NearbyMeshClient(
     private val envelopeIdToReceivedFrom = ConcurrentHashMap<String, String>()
     private val knownNodes = Collections.synchronizedSet(linkedSetOf<String>())
     private val knownEdges = Collections.synchronizedSet(linkedSetOf<TopologyEdge>())
-    
+    /** Косвенные пиры из TOPOLOGY: userId -> endpointId реле (кому слать, чтобы тот переслал). */
+    private val relayEndpointByIndirectUserId = ConcurrentHashMap<String, String>()
+
+    /** В режиме «все протоколы» — объединённый список userId по всем транспортам для TOPOLOGY. */
+    @Volatile
+    var topologyPeerListProvider: (() -> List<String>)? = null
+
     private var advertisingStarted = false
     private var discoveryStarted = false
     private val maxSeenMessageIds = 5000
@@ -211,7 +217,11 @@ class NearbyMeshClient(
     }
 
     private fun syncConnectedPeerInfos() {
-        val list = connected.toList().map { endpointId ->
+        val me = localIdentity?.userId?.substringBefore("|")?.trim() ?: ""
+        val directUserIds = connected.mapNotNull { endpointId ->
+            (peerNamesByEndpoint[endpointId] ?: endpointId).toString().substringBefore("|").trim().takeIf { it.isNotBlank() } ?: endpointId
+        }.toSet()
+        val direct = connected.toList().map { endpointId ->
             val raw = peerNamesByEndpoint[endpointId] ?: endpointId
             val parts = raw.split("|")
             val uid = parts.getOrNull(0)?.trim() ?: raw
@@ -219,7 +229,10 @@ class NearbyMeshClient(
             val displayName = parts.getOrNull(2)?.take(30)?.trim() ?: ""
             PeerInfo(endpointId, uid, model, displayName)
         }
-        _connectedPeerInfos.value = list
+        val indirect = knownNodes.filter { it != me && !directUserIds.contains(it) }.map { userId ->
+            PeerInfo(userId, userId, "", "$userId (через сеть)")
+        }
+        _connectedPeerInfos.value = direct + indirect
     }
 
     private fun syncStats() {
@@ -275,20 +288,23 @@ class NearbyMeshClient(
         publishTopology()
     }
 
-    private fun mergeRemoteTopology(topologyJson: String) {
+    private fun mergeRemoteTopology(topologyJson: String, fromEndpointId: String) {
         runCatching {
             val json = JSONObject(topologyJson)
             val src = json.getString("sourceNode")
             val peers = json.optJSONArray("directPeers") ?: JSONArray()
+            val me = localIdentity?.userId?.substringBefore("|")?.trim() ?: ""
 
             knownNodes += src
             for (i in 0 until peers.length()) {
-                val peer = peers.getString(i)
+                val peer = peers.getString(i).substringBefore("|").trim()
                 knownNodes += peer
                 knownEdges += TopologyEdge(src, peer)
                 knownEdges += TopologyEdge(peer, src)
+                if (peer != me) relayEndpointByIndirectUserId[peer] = fromEndpointId
             }
             publishTopology()
+            syncConnectedPeerInfos()
         }.onFailure {
             log("Topology parse failed: ${it.message}")
         }
@@ -304,7 +320,8 @@ class NearbyMeshClient(
 
     private fun buildTopologyPayload(): String {
         val me = localIdentity?.userId ?: "unknown"
-        val peers = connected.map { endpoint -> peerNamesByEndpoint[endpoint] ?: endpoint }
+        val peers = topologyPeerListProvider?.invoke()
+            ?: connected.map { (peerNamesByEndpoint[it] ?: it).toString().substringBefore("|").trim().ifBlank { it } }.distinct()
         return JSONObject()
             .put("sourceNode", me)
             .put("directPeers", JSONArray(peers))
@@ -595,7 +612,7 @@ class NearbyMeshClient(
                     log("Topology decrypt error ${envelope.id.take(8)}")
                     return
                 }
-                mergeRemoteTopology(topologyPayload)
+                mergeRemoteTopology(topologyPayload, fromEndpointId)
                 if (envelope.ttl > 0) {
                     forward(envelope, fromEndpointId)
                 }
@@ -619,13 +636,20 @@ class NearbyMeshClient(
             log("FWD blocked ${original.id.take(8)}: forwarding disabled")
             return
         }
-        val targets = connected.filter { it != fromEndpointId }
-        if (targets.isEmpty()) return
-
         val forwarded = original.forForwarding(
             newTtl = (original.ttl - 1).coerceAtLeast(0),
             newHopCount = original.hopCount + 1,
         )
+        val recipient = original.recipientUserId?.substringBefore("|")?.trim()
+        val targets = if (recipient != null && recipient != localIdentity?.userId?.substringBefore("|")?.trim()) {
+            val recipientEndpoint = connected.find { endpointId ->
+                (peerNamesByEndpoint[endpointId] ?: endpointId).toString().substringBefore("|").trim() == recipient
+            }
+            if (recipientEndpoint != null) listOf(recipientEndpoint) else connected.filter { it != fromEndpointId }
+        } else {
+            connected.filter { it != fromEndpointId }
+        }
+        if (targets.isEmpty()) return
         sendToTargets(targets, forwarded)
         forwardedCount++
         syncStats()
@@ -725,7 +749,10 @@ class NearbyMeshClient(
         }
 
         override fun onEndpointLost(endpointId: String) {
-            peerNamesByEndpoint.remove(endpointId)
+            // Не удаляем имя: соединение может быть ещё активно; имя сбросим в onDisconnected.
+            if (endpointId !in connected) {
+                peerNamesByEndpoint.remove(endpointId)
+            }
             log("Endpoint lost: $endpointId")
         }
     }
@@ -800,6 +827,7 @@ class NearbyMeshClient(
         peerNamesByEndpoint.clear()
         knownNodes.clear()
         knownEdges.clear()
+        relayEndpointByIndirectUserId.clear()
         _topology.value = TopologySnapshot()
         _connectedPeerInfos.value = emptyList()
         _realtimeMessages.value = emptyList()
@@ -829,12 +857,14 @@ class NearbyMeshClient(
      */
     fun sendToPeer(peerUserId: String, sender: LocalIdentity, content: OutboundContent): Int {
         val normPeer = peerUserId.substringBefore("|").trim()
-        val endpointId = peerNamesByEndpoint.entries.find { it.value == normPeer || it.value.startsWith("$normPeer|") }?.key
+        val endpointId = peerNamesByEndpoint.entries.find { (_, v) -> v.substringBefore("|").trim() == normPeer }?.key
+            ?: relayEndpointByIndirectUserId[normPeer]
+            ?: if (normPeer in connected) normPeer else null
             ?: run {
                 if (content is OutboundContent.CallSignal) {
                     Log.e("PeerDoneCall", "sendToPeer FAIL: no endpoint for peer normPeer=$normPeer phase=${content.phase} available=${peerNamesByEndpoint.values.take(5)}")
                 }
-                log("sendToPeer: no endpoint for peer $normPeer")
+                log("sendToPeer: no endpoint for peer $normPeer (direct or relay)")
                 return 0
             }
         if (content is OutboundContent.CallSignal) {
@@ -852,9 +882,11 @@ class NearbyMeshClient(
      */
     fun sendChatToPeer(peerUserId: String, sender: LocalIdentity, content: OutboundContent, policy: AccessPolicy, ttl: Int): Int {
         val normPeer = peerUserId.substringBefore("|").trim()
-        val endpointId = peerNamesByEndpoint.entries.find { it.value == normPeer || it.value.startsWith("$normPeer|") }?.key
+        val endpointId = peerNamesByEndpoint.entries.find { (_, v) -> v.substringBefore("|").trim() == normPeer }?.key
+            ?: relayEndpointByIndirectUserId[normPeer]
+            ?: if (normPeer in connected) normPeer else null
             ?: run {
-                log("sendChatToPeer: no endpoint for peer $normPeer")
+                log("sendChatToPeer: no endpoint for peer $normPeer (direct or relay)")
                 return 0
             }
         val encoded = ContentCodec.encode(content)
