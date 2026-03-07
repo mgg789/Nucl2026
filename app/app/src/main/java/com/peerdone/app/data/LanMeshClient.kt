@@ -69,7 +69,6 @@ class LanMeshClient(
     private val running = AtomicBoolean(false)
     private var udpSocket: DatagramSocket? = null
     private var tcpServer: ServerSocket? = null
-    private var helloJob: Job? = null
     private var timerJob: Job? = null
 
     /** userId -> (host, port, nickname, device, lastSeenMs) */
@@ -79,6 +78,9 @@ class LanMeshClient(
     private val envelopeIdToReceivedFrom = ConcurrentHashMap<String, String>()
     private val knownNodes = Collections.synchronizedSet(mutableSetOf<String>())
     private val knownEdges = Collections.synchronizedSet(mutableSetOf<TopologyEdge>())
+    /** Косвенные пиры (из TOPOLOGY): userId -> userId реле (прямой пир, через которого слать). */
+    private val relayPeerByIndirectUserId = ConcurrentHashMap<String, String>()
+    private var topologySyncJob: Job? = null
     private var sentCount = 0
     private var ackReceivedCount = 0
     private var lostCount = 0
@@ -150,7 +152,8 @@ class LanMeshClient(
     }
 
     private fun syncPeerInfos() {
-        val list = peersByUserId.map { (userId, peer) ->
+        val me = localIdentity?.userId?.substringBefore("|")?.trim() ?: ""
+        val direct = peersByUserId.map { (userId, peer) ->
             NearbyMeshClient.PeerInfo(
                 endpointId = userId,
                 userId = userId,
@@ -158,8 +161,16 @@ class LanMeshClient(
                 displayName = peer.nickname.ifBlank { userId },
             )
         }
-        _connectedPeerInfos.value = list
-        _connectedEndpoints.value = peersByUserId.keys.toList()
+        val indirect = knownNodes.filter { it != me && !peersByUserId.containsKey(it) }.map { userId ->
+            NearbyMeshClient.PeerInfo(
+                endpointId = userId,
+                userId = userId,
+                deviceModel = "",
+                displayName = "$userId (через сеть)",
+            )
+        }
+        _connectedPeerInfos.value = direct + indirect
+        _connectedEndpoints.value = (peersByUserId.keys + relayPeerByIndirectUserId.keys).toList()
     }
 
     private fun syncStats() {
@@ -242,14 +253,8 @@ class LanMeshClient(
                 }
             }
 
-            helloJob = scope.launch {
-                while (isActive && running.get()) {
-                    sendHello()
-                    delay(2000)
-                }
-            }
-
             timerJob = scope.launch {
+                sendHello()
                 while (isActive && running.get()) {
                     delay(2000)
                     sendHello()
@@ -262,7 +267,15 @@ class LanMeshClient(
                 }
             }
 
+            topologySyncJob = scope.launch {
+                while (isActive && running.get()) {
+                    delay(4000)
+                    sendTopologyUpdate()
+                }
+            }
+
             sendHello()
+            sendTopologyUpdate()
         } catch (e: Exception) {
             log("LAN start failed: ${e.message}")
             stop()
@@ -418,7 +431,14 @@ class LanMeshClient(
         return digest.joinToString("") { b -> "%02x".format(b) }
     }
 
+    private fun updatePeerLastSeen(userId: String) {
+        peersByUserId[userId]?.let { peer ->
+            peersByUserId[userId] = peer.copy(lastSeenMs = System.currentTimeMillis())
+        }
+    }
+
     private fun handleEnvelope(fromEndpointId: String, envelope: MeshEnvelope) {
+        updatePeerLastSeen(envelope.senderUserId)
         if (!MeshSignature.verify(envelope)) {
             log("drop ${envelope.id.take(8)} invalid signature")
             return
@@ -601,8 +621,12 @@ class LanMeshClient(
                         knownNodes.add(peer)
                         knownEdges.add(TopologyEdge(src, peer))
                         knownEdges.add(TopologyEdge(peer, src))
+                        if (peersByUserId.containsKey(src) && peer != localIdentity?.userId?.substringBefore("|")?.trim()) {
+                            relayPeerByIndirectUserId[peer] = src
+                        }
                     }
                     publishTopology()
+                    syncPeerInfos()
                 }
                 if (envelope.ttl > 0) forward(envelope, fromEndpointId)
             }
@@ -627,7 +651,12 @@ class LanMeshClient(
             newTtl = (original.ttl - 1).coerceAtLeast(0),
             newHopCount = original.hopCount + 1,
         )
-        val targets = peersByUserId.keys.filter { it != fromUserId }
+        val recipient = original.recipientUserId?.substringBefore("|")?.trim()
+        val targets = if (recipient != null && recipient != localIdentity?.userId?.substringBefore("|")?.trim() && peersByUserId.containsKey(recipient)) {
+            listOf(recipient)
+        } else {
+            peersByUserId.keys.filter { it != fromUserId }
+        }
         targets.forEach { userId ->
             val peer = peersByUserId[userId] ?: return@forEach
             sendPacketTo(peer.host, peer.port, forwarded.toJsonBytes())
@@ -700,9 +729,32 @@ class LanMeshClient(
         publishTopology()
     }
 
+    private fun buildTopologyPayload(): String {
+        val me = localIdentity?.userId ?: "unknown"
+        val peers = peersByUserId.keys.toList()
+        return JSONObject()
+            .put("sourceNode", me)
+            .put("directPeers", org.json.JSONArray(peers))
+            .put("timestampMs", System.currentTimeMillis())
+            .toString()
+    }
+
+    private fun sendTopologyUpdate() {
+        val sender = localIdentity ?: return
+        val targets = peersByUserId.keys.toList()
+        if (targets.isEmpty()) return
+        val draft = MeshEnvelope.createTopology(
+            sender = sender,
+            senderPublicKeyBase64 = signer.publicKeyBase64(),
+            topologyJson = buildTopologyPayload(),
+            ttl = 2,
+        )
+        val signed = signEnvelope(draft)
+        sendToTargets(targets, signed)
+    }
+
     fun stop() {
         if (!running.getAndSet(false)) return
-        helloJob?.cancel()
         timerJob?.cancel()
         try { udpSocket?.close() } catch (_: Exception) {}
         udpSocket = null
@@ -716,6 +768,9 @@ class LanMeshClient(
         completedReceivedFiles.clear()
         knownNodes.clear()
         knownEdges.clear()
+        relayPeerByIndirectUserId.clear()
+        topologySyncJob?.cancel()
+        topologySyncJob = null
         _isRunning.value = false
         _connectedPeerInfos.value = emptyList()
         _connectedEndpoints.value = emptyList()
@@ -798,21 +853,23 @@ class LanMeshClient(
 
     fun sendToPeer(peerUserId: String, sender: LocalIdentity, content: OutboundContent): Int {
         val normPeer = peerUserId.substringBefore("|").trim()
-        if (!peersByUserId.containsKey(normPeer)) {
-            log("sendToPeer: no peer $normPeer")
+        val target = if (peersByUserId.containsKey(normPeer)) normPeer else relayPeerByIndirectUserId[normPeer]
+        if (target == null) {
+            log("sendToPeer: no peer $normPeer (direct or via relay)")
             return 0
         }
         val policy = AccessPolicy()
         val encoded = ContentCodec.encode(content)
         val envelope = buildChatEnvelope(sender, encoded, policy, ttl = 1, recipientUserId = normPeer) ?: return 0
         val signed = signEnvelope(envelope)
-        return sendToTargets(listOf(normPeer), signed)
+        return sendToTargets(listOf(target), signed)
     }
 
     fun sendChatToPeer(peerUserId: String, sender: LocalIdentity, content: OutboundContent, policy: AccessPolicy, ttl: Int): Int {
         val normPeer = peerUserId.substringBefore("|").trim()
-        if (!peersByUserId.containsKey(normPeer)) {
-            log("sendChatToPeer: no peer $normPeer")
+        val sendToPeerId = if (peersByUserId.containsKey(normPeer)) normPeer else relayPeerByIndirectUserId[normPeer]
+        if (sendToPeerId == null) {
+            log("sendChatToPeer: no peer $normPeer (direct or via relay)")
             return 0
         }
         val encoded = ContentCodec.encode(content)
@@ -826,7 +883,7 @@ class LanMeshClient(
         }
         val signed = signEnvelope(envelope)
         queueStore.upsertQueued(signed.id, previewText, signed.toJsonBytes().size.toLong())
-        val sent = sendToTargets(listOf(normPeer), signed)
+        val sent = sendToTargets(listOf(sendToPeerId), signed)
         queueStore.markSent(signed.id)
         seenMessageIds.add(signed.id)
         pendingAcks[signed.id] = PendingAck(envelope = signed)

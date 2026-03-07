@@ -291,6 +291,7 @@ fun NetworkScreen(
             "nearby" -> "Nearby (BLE + Wi‑Fi)"
             "wifi_direct" -> "WiFi Direct"
             "lan" -> "LAN (совместимость с iOS)"
+            "all" -> "Все протоколы (Nearby + WiFi + LAN)"
             else -> "Авто (Nearby)"
         }
         NetworkStatCard(
@@ -310,7 +311,7 @@ fun NetworkScreen(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            listOf("auto" to "Авто", "nearby" to "Nearby", "wifi_direct" to "WiFi Direct", "lan" to "LAN").forEach { (value, label) ->
+            listOf("auto" to "Авто", "nearby" to "Nearby", "wifi_direct" to "WiFi Direct", "lan" to "LAN", "all" to "Все").forEach { (value, label) ->
                 val selected = preferredTransport == value
                 Surface(
                     shape = RoundedCornerShape(20.dp),
@@ -395,6 +396,7 @@ fun NetworkScreen(
                         "wifi_direct" -> TransportType.WIFI_DIRECT
                         "nearby" -> TransportType.NEARBY
                         "lan" -> TransportType.LAN_P2P
+                        "all" -> null
                         else -> null
                     }
                 },

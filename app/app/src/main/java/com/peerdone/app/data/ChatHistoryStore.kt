@@ -1,11 +1,14 @@
 package com.peerdone.app.data
 
 import android.content.Context
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.json.JSONArray
 
@@ -56,24 +59,33 @@ private const val MAX_MESSAGES_PER_PEER = 500
 private const val PREFS_NAME = "chat_history_store"
 private const val KEY_DATA = "chat_history_json"
 
+/** Интерфейс хранилища истории чатов (реализуют ChatHistoryStore и MergedChatHistoryStore). */
+interface ChatHistoryStoreInterface {
+    val byPeer: StateFlow<Map<String, List<StoredChatMessage>>>
+    fun getMessagesForPeerSync(peerId: String): List<StoredChatMessage>
+    fun getMessagesForPeerFlow(peerId: String): Flow<List<StoredChatMessage>>
+    fun addMessage(peerId: String, message: StoredChatMessage)
+    fun addMessages(peerId: String, messages: List<StoredChatMessage>)
+}
+
 /**
  * Хранит историю чатов на устройстве. Сообщения сохраняются при получении и при отправке.
  */
-class ChatHistoryStore(context: Context) {
+class ChatHistoryStore(context: Context) : ChatHistoryStoreInterface {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private val _byPeer = MutableStateFlow(loadAll())
-    val byPeer: StateFlow<Map<String, List<StoredChatMessage>>> = _byPeer.asStateFlow()
+    override val byPeer: StateFlow<Map<String, List<StoredChatMessage>>> = _byPeer.asStateFlow()
 
-    fun getMessagesForPeerSync(peerId: String): List<StoredChatMessage> =
+    override fun getMessagesForPeerSync(peerId: String): List<StoredChatMessage> =
         _byPeer.value[peerId.substringBefore("|").trim()].orEmpty().sortedBy { it.timestampMs }
 
-    fun getMessagesForPeerFlow(peerId: String): Flow<List<StoredChatMessage>> {
+    override fun getMessagesForPeerFlow(peerId: String): Flow<List<StoredChatMessage>> {
         val norm = peerId.substringBefore("|").trim()
         return _byPeer.map { peers -> (peers[norm].orEmpty()).sortedBy { it.timestampMs } }
     }
 
-    fun addMessage(peerId: String, message: StoredChatMessage) {
+    override fun addMessage(peerId: String, message: StoredChatMessage) {
         val norm = peerId.substringBefore("|").trim()
         val updated = _byPeer.value.toMutableMap()
         val list = (updated[norm].orEmpty()).filter { it.id != message.id } + message
@@ -82,7 +94,7 @@ class ChatHistoryStore(context: Context) {
         persist(updated)
     }
 
-    fun addMessages(peerId: String, messages: List<StoredChatMessage>) {
+    override fun addMessages(peerId: String, messages: List<StoredChatMessage>) {
         if (messages.isEmpty()) return
         val norm = peerId.substringBefore("|").trim()
         val existing = (_byPeer.value[norm].orEmpty()).associateBy { it.id }.toMutableMap()
@@ -126,5 +138,54 @@ class ChatHistoryStore(context: Context) {
         }
         root.put("peers", peers)
         prefs.edit().putString(KEY_DATA, root.toString()).apply()
+    }
+}
+
+/**
+ * Объединяет несколько ChatHistoryStore в один вид: чтение — слияние и дедуп по id, запись — во все хранилища.
+ * Используется в режиме «все протоколы».
+ */
+class MergedChatHistoryStore(
+    private val scope: CoroutineScope,
+    private val stores: List<ChatHistoryStore>,
+) : ChatHistoryStoreInterface {
+
+    private val _byPeer = MutableStateFlow<Map<String, List<StoredChatMessage>>>(emptyMap())
+    override val byPeer: StateFlow<Map<String, List<StoredChatMessage>>> = _byPeer.asStateFlow()
+
+    init {
+        if (stores.isNotEmpty()) {
+            scope.launch {
+                combine(stores.map { it.byPeer }) { maps ->
+                    val allPeers = maps.flatMap { it.keys }.toSet()
+                    allPeers.associateWith { peerId ->
+                        maps.flatMap { it[peerId].orEmpty() }.distinctBy { it.id }.sortedBy { it.timestampMs }
+                    }
+                }.collect { _byPeer.value = it }
+            }
+        }
+    }
+
+    override fun getMessagesForPeerSync(peerId: String): List<StoredChatMessage> {
+        val merged = stores.flatMap { it.getMessagesForPeerSync(peerId) }
+        return merged.distinctBy { it.id }.sortedBy { it.timestampMs }
+    }
+
+    override fun getMessagesForPeerFlow(peerId: String): Flow<List<StoredChatMessage>> {
+        return when (stores.size) {
+            0 -> kotlinx.coroutines.flow.flowOf(emptyList())
+            1 -> stores.single().getMessagesForPeerFlow(peerId)
+            else -> combine(stores.map { it.getMessagesForPeerFlow(peerId) }) { arrays ->
+                arrays.flatMap { it.toList() }.distinctBy { it.id }.sortedBy { it.timestampMs }
+            }
+        }
+    }
+
+    override fun addMessage(peerId: String, message: StoredChatMessage) {
+        stores.forEach { it.addMessage(peerId, message) }
+    }
+
+    override fun addMessages(peerId: String, messages: List<StoredChatMessage>) {
+        stores.forEach { it.addMessages(peerId, messages) }
     }
 }

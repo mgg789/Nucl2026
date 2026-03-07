@@ -5,6 +5,7 @@ import com.peerdone.app.core.call.CallManager
 import com.peerdone.app.data.DeviceIdentityStore
 import com.peerdone.app.data.LanMeshClient
 import com.peerdone.app.data.MeshClientRouter
+import com.peerdone.app.data.MultiTransportMeshClient
 import com.peerdone.app.data.NearbyMeshClient
 import com.peerdone.app.data.PreferencesStore
 import com.peerdone.app.data.WifiDirectMeshClient
@@ -30,6 +31,15 @@ class PeerDoneApplication : Application() {
         LanMeshClient(this)
     }
 
+    val multiTransportMeshClient: MultiTransportMeshClient by lazy {
+        MultiTransportMeshClient(
+            scope = applicationScope,
+            nearby = nearbyMeshClient,
+            wifiDirect = wifiDirectMeshClient,
+            lan = lanMeshClient,
+        )
+    }
+
     val meshClientRouter: MeshClientRouter by lazy {
         MeshClientRouter(
             scope = applicationScope,
@@ -38,6 +48,7 @@ class PeerDoneApplication : Application() {
             nearby = nearbyMeshClient,
             wifiDirect = wifiDirectMeshClient,
             lan = lanMeshClient,
+            multi = multiTransportMeshClient,
         )
     }
 

@@ -60,7 +60,7 @@ class PreferencesStore(private val context: Context) {
         suspend fun setPreferredTransport(value: String) {
         context.dataStore.edit { prefs ->
             prefs[PREFERRED_TRANSPORT] = when (value) {
-                "nearby", "wifi_direct", "lan" -> value
+                "nearby", "wifi_direct", "lan", "all" -> value
                 else -> "auto"
             }
         }
