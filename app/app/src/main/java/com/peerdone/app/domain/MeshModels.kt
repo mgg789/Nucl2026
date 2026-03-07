@@ -54,7 +54,8 @@ data class MeshEnvelope(
         return json.toString().encodeToByteArray()
     }
 
-    // В подпись не включаем ttl/hopCount, чтобы ретранслятор мог форвардить пакет без перезаписи подписи.
+    // Строка для подписи: совпадает с iOS (без recipientUserId, policy в каноническом JSON).
+    // Не включаем ttl/hopCount, чтобы ретранслятор мог форвардить пакет без перезаписи подписи.
     fun signingString(): String = buildString {
         append(id)
         append('|')
@@ -72,15 +73,13 @@ data class MeshEnvelope(
         append('|')
         append(keyId)
         append('|')
-        append(recipientUserId.orEmpty())
-        append('|')
         append(timestampMs)
         append('|')
         append(ivBase64)
         append('|')
         append(cipherTextBase64)
         append('|')
-        append(policy.toJson().toString())
+        append(policy.signingJSON())
     }
 
     fun forForwarding(newTtl: Int, newHopCount: Int): MeshEnvelope = copy(
@@ -259,6 +258,22 @@ fun AccessPolicy.toJson(): JSONObject {
         .put("includeOrgs", JSONArray(includeOrgs.toList()))
         .put("excludeOrgs", JSONArray(excludeOrgs.toList()))
 }
+
+/** Каноническая строка политики для подписи (совместимость с iOS). */
+fun AccessPolicy.signingJSON(): String {
+    val maxPart = maxLevel?.toString() ?: "null"
+    val minPart = minLevel?.toString() ?: "null"
+    val includes = includeOrgs.joinToString(",") { "\"${escapeForSigning(it)}\"" }
+    val excludes = excludeOrgs.joinToString(",") { "\"${escapeForSigning(it)}\"" }
+    return "{\"maxLevel\":$maxPart,\"minLevel\":$minPart,\"includeOrgs\":[$includes],\"excludeOrgs\":[$excludes]}"
+}
+
+private fun escapeForSigning(value: String): String = value
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+    .replace("\n", "\\n")
+    .replace("\r", "\\r")
+    .replace("\t", "\\t")
 
 fun AccessPolicy.Companion.fromJson(json: JSONObject): AccessPolicy {
     val include = mutableSetOf<String>()

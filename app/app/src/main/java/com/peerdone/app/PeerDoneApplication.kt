@@ -3,6 +3,7 @@ package com.peerdone.app
 import android.app.Application
 import com.peerdone.app.core.call.CallManager
 import com.peerdone.app.data.DeviceIdentityStore
+import com.peerdone.app.data.LanMeshClient
 import com.peerdone.app.data.MeshClientRouter
 import com.peerdone.app.data.NearbyMeshClient
 import com.peerdone.app.data.PreferencesStore
@@ -25,6 +26,10 @@ class PeerDoneApplication : Application() {
         WifiDirectMeshClient(this)
     }
 
+    val lanMeshClient: LanMeshClient by lazy {
+        LanMeshClient(this)
+    }
+
     val meshClientRouter: MeshClientRouter by lazy {
         MeshClientRouter(
             scope = applicationScope,
@@ -32,6 +37,7 @@ class PeerDoneApplication : Application() {
             getPreferenceSync = { preferencesStore.preferredTransportSync() },
             nearby = nearbyMeshClient,
             wifiDirect = wifiDirectMeshClient,
+            lan = lanMeshClient,
         )
     }
 

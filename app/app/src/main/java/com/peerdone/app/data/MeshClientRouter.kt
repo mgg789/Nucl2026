@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * Роутер выбора транспорта: при смене предпочтения (auto/nearby/wifi_direct)
+ * Роутер выбора транспорта: при смене предпочтения (auto/nearby/wifi_direct/lan)
  * останавливает текущий клиент и запускает другой с теми же identity/displayName.
  */
 class MeshClientRouter(
@@ -21,6 +21,7 @@ class MeshClientRouter(
     private val getPreferenceSync: () -> String,
     private val nearby: NearbyMeshClient,
     private val wifiDirect: WifiDirectMeshClient,
+    private val lan: LanMeshClient,
 ) {
     private var current: Any = nearby
     private var lastIdentity: LocalIdentity? = null
@@ -28,19 +29,27 @@ class MeshClientRouter(
 
     private fun active(): Any = current
 
+    private fun clientForPreference(pref: String): Any = when (pref) {
+        "wifi_direct" -> wifiDirect
+        "lan" -> lan
+        else -> nearby
+    }
+
     init {
         scope.launch {
             preferenceFlow.collect { pref ->
-                val next = if (pref == "wifi_direct") wifiDirect else nearby
+                val next = clientForPreference(pref)
                 if (next != current) {
                     (current as? NearbyMeshClient)?.stop()
                     (current as? WifiDirectMeshClient)?.stop()
+                    (current as? LanMeshClient)?.stop()
                     current = next
                     lastIdentity?.let { id ->
                         lastDisplayName.let { name ->
                             when (next) {
                                 is NearbyMeshClient -> next.start(id, name)
                                 is WifiDirectMeshClient -> next.start(id, name)
+                                is LanMeshClient -> next.start(id, name)
                                 else -> Unit
                             }
                         }
@@ -54,6 +63,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.isRunning
             is WifiDirectMeshClient -> a.isRunning
+            is LanMeshClient -> a.isRunning
             else -> MutableStateFlow(false).asStateFlow()
         }
 
@@ -61,6 +71,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.connectedPeerInfos
             is WifiDirectMeshClient -> a.connectedPeerInfos
+            is LanMeshClient -> a.connectedPeerInfos
             else -> MutableStateFlow(emptyList<NearbyMeshClient.PeerInfo>()).asStateFlow()
         }
 
@@ -68,6 +79,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.incomingMessages
             is WifiDirectMeshClient -> a.incomingMessages
+            is LanMeshClient -> a.incomingMessages
             else -> MutableStateFlow(emptyList<ReceivedMeshMessage>()).asStateFlow()
         }
 
@@ -75,6 +87,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.realtimeMessages
             is WifiDirectMeshClient -> a.realtimeMessages
+            is LanMeshClient -> a.realtimeMessages
             else -> MutableStateFlow(emptyList<ReceivedMeshMessage>()).asStateFlow()
         }
 
@@ -82,6 +95,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.topology
             is WifiDirectMeshClient -> a.topology
+            is LanMeshClient -> a.topology
             else -> MutableStateFlow(TopologySnapshot()).asStateFlow()
         }
 
@@ -89,6 +103,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.deliveryMetrics
             is WifiDirectMeshClient -> a.deliveryMetrics
+            is LanMeshClient -> a.deliveryMetrics
             else -> MutableStateFlow(DeliveryMetrics()).asStateFlow()
         }
 
@@ -96,6 +111,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.chatHistoryStore
             is WifiDirectMeshClient -> a.chatHistoryStore
+            is LanMeshClient -> a.chatHistoryStore
             else -> throw IllegalStateException("No active client")
         }
 
@@ -103,6 +119,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.connectedEndpoints
             is WifiDirectMeshClient -> a.connectedEndpoints
+            is LanMeshClient -> a.connectedEndpoints
             else -> MutableStateFlow(emptyList<String>()).asStateFlow()
         }
 
@@ -110,6 +127,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.stats
             is WifiDirectMeshClient -> a.stats
+            is LanMeshClient -> a.stats
             else -> MutableStateFlow(MeshStats()).asStateFlow()
         }
 
@@ -117,6 +135,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.testConfig
             is WifiDirectMeshClient -> a.testConfig
+            is LanMeshClient -> a.testConfig
             else -> MutableStateFlow(NetworkTestConfig()).asStateFlow()
         }
 
@@ -124,6 +143,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.outboundRecords
             is WifiDirectMeshClient -> a.outboundRecords
+            is LanMeshClient -> a.outboundRecords
             else -> MutableStateFlow(emptyList<OutboundMessageRecord>()).asStateFlow()
         }
 
@@ -131,6 +151,7 @@ class MeshClientRouter(
         get() = when (val a = active()) {
             is NearbyMeshClient -> a.logs
             is WifiDirectMeshClient -> a.logs
+            is LanMeshClient -> a.logs
             else -> MutableStateFlow(emptyList<String>()).asStateFlow()
         }
 
@@ -138,15 +159,17 @@ class MeshClientRouter(
         lastIdentity = identity
         lastDisplayName = displayName
         val pref = getPreferenceSync()
-        val client = if (pref == "wifi_direct") wifiDirect else nearby
+        val client = clientForPreference(pref)
         if (current != client) {
             (current as? NearbyMeshClient)?.stop()
             (current as? WifiDirectMeshClient)?.stop()
+            (current as? LanMeshClient)?.stop()
             current = client
         }
         when (client) {
             is NearbyMeshClient -> client.start(identity, displayName)
             is WifiDirectMeshClient -> client.start(identity, displayName)
+            is LanMeshClient -> client.start(identity, displayName)
             else -> Unit
         }
     }
@@ -156,6 +179,7 @@ class MeshClientRouter(
         lastDisplayName = null
         (current as? NearbyMeshClient)?.stop()
         (current as? WifiDirectMeshClient)?.stop()
+        (current as? LanMeshClient)?.stop()
     }
 
     fun buildChatEnvelope(
@@ -167,72 +191,84 @@ class MeshClientRouter(
     ): MeshEnvelope? = when (val a = active()) {
         is NearbyMeshClient -> a.buildChatEnvelope(sender, messageText, policy, ttl, recipientUserId)
         is WifiDirectMeshClient -> a.buildChatEnvelope(sender, messageText, policy, ttl, recipientUserId)
+        is LanMeshClient -> a.buildChatEnvelope(sender, messageText, policy, ttl, recipientUserId)
         else -> null
     }
 
     fun sendChat(envelope: MeshEnvelope, previewText: String): Int = when (val a = active()) {
         is NearbyMeshClient -> a.sendChat(envelope, previewText)
         is WifiDirectMeshClient -> a.sendChat(envelope, previewText)
+        is LanMeshClient -> a.sendChat(envelope, previewText)
         else -> 0
     }
 
     fun sendToPeer(peerUserId: String, sender: LocalIdentity, content: OutboundContent): Int = when (val a = active()) {
         is NearbyMeshClient -> a.sendToPeer(peerUserId, sender, content)
         is WifiDirectMeshClient -> a.sendToPeer(peerUserId, sender, content)
+        is LanMeshClient -> a.sendToPeer(peerUserId, sender, content)
         else -> 0
     }
 
     fun sendChatToPeer(peerUserId: String, sender: LocalIdentity, content: OutboundContent, policy: AccessPolicy, ttl: Int): Int = when (val a = active()) {
         is NearbyMeshClient -> a.sendChatToPeer(peerUserId, sender, content, policy, ttl)
         is WifiDirectMeshClient -> a.sendChatToPeer(peerUserId, sender, content, policy, ttl)
+        is LanMeshClient -> a.sendChatToPeer(peerUserId, sender, content, policy, ttl)
         else -> 0
     }
 
     fun broadcast(sender: LocalIdentity, content: OutboundContent) = when (val a = active()) {
         is NearbyMeshClient -> a.broadcast(sender, content)
         is WifiDirectMeshClient -> a.broadcast(sender, content)
+        is LanMeshClient -> a.broadcast(sender, content)
         else -> Unit
     }
 
     fun rememberSentContent(content: OutboundContent) = when (val a = active()) {
         is NearbyMeshClient -> a.rememberSentContent(content)
         is WifiDirectMeshClient -> a.rememberSentContent(content)
+        is LanMeshClient -> a.rememberSentContent(content)
         else -> Unit
     }
 
     fun requestHistoryFromPeer(peerId: String, sender: LocalIdentity): Int = when (val a = active()) {
         is NearbyMeshClient -> a.requestHistoryFromPeer(peerId, sender)
         is WifiDirectMeshClient -> a.requestHistoryFromPeer(peerId, sender)
+        is LanMeshClient -> a.requestHistoryFromPeer(peerId, sender)
         else -> 0
     }
 
     fun transportHealth(): TransportHealth = when (val a = active()) {
         is NearbyMeshClient -> a.transportHealth()
         is WifiDirectMeshClient -> a.transportHealth()
+        is LanMeshClient -> a.transportHealth()
         else -> TransportHealth(com.peerdone.app.core.transport.TransportType.NEARBY, false, 999, 0, 10, 0)
     }
 
     fun setDropAcksForDemo(enabled: Boolean) = when (val a = active()) {
         is NearbyMeshClient -> a.setDropAcksForDemo(enabled)
         is WifiDirectMeshClient -> a.setDropAcksForDemo(enabled)
+        is LanMeshClient -> a.setDropAcksForDemo(enabled)
         else -> Unit
     }
 
     fun setForwardingEnabled(enabled: Boolean) = when (val a = active()) {
         is NearbyMeshClient -> a.setForwardingEnabled(enabled)
         is WifiDirectMeshClient -> a.setForwardingEnabled(enabled)
+        is LanMeshClient -> a.setForwardingEnabled(enabled)
         else -> Unit
     }
 
     fun setPacketLossSimulation(inboundPercent: Int, outboundPercent: Int) = when (val a = active()) {
         is NearbyMeshClient -> a.setPacketLossSimulation(inboundPercent, outboundPercent)
         is WifiDirectMeshClient -> a.setPacketLossSimulation(inboundPercent, outboundPercent)
+        is LanMeshClient -> a.setPacketLossSimulation(inboundPercent, outboundPercent)
         else -> Unit
     }
 
     fun resetDeliveryMetrics() = when (val a = active()) {
         is NearbyMeshClient -> a.resetDeliveryMetrics()
         is WifiDirectMeshClient -> a.resetDeliveryMetrics()
+        is LanMeshClient -> a.resetDeliveryMetrics()
         else -> Unit
     }
 }

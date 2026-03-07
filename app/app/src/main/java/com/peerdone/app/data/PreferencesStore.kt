@@ -21,7 +21,7 @@ class PreferencesStore(private val context: Context) {
         private val USER_FIRST_NAME = stringPreferencesKey("user_first_name")
         private val USER_LAST_NAME = stringPreferencesKey("user_last_name")
         private val USER_NICKNAME = stringPreferencesKey("user_nickname")
-        /** "auto" | "nearby" | "wifi_direct" — какой транспорт использовать для общения. */
+        /** "auto" | "nearby" | "wifi_direct" | "lan" — какой транспорт использовать для общения. */
         private val PREFERRED_TRANSPORT = stringPreferencesKey("preferred_transport")
     }
 
@@ -32,10 +32,10 @@ class PreferencesStore(private val context: Context) {
         context.dataStore.data.first()[PREFERRED_TRANSPORT] ?: "auto"
     }
 
-    suspend fun setPreferredTransport(value: String) {
+        suspend fun setPreferredTransport(value: String) {
         context.dataStore.edit { prefs ->
             prefs[PREFERRED_TRANSPORT] = when (value) {
-                "nearby", "wifi_direct" -> value
+                "nearby", "wifi_direct", "lan" -> value
                 else -> "auto"
             }
         }
