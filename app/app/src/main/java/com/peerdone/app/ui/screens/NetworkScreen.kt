@@ -44,7 +44,9 @@ import com.peerdone.app.core.transport.TransportType
 import com.peerdone.app.core.transport.DeliveryClass
 import com.peerdone.app.domain.AccessPolicy
 import com.peerdone.app.service.SendOrchestrator
+import com.peerdone.app.data.DeliveryState
 import com.peerdone.app.data.NearbyTransportAdapter
+import com.peerdone.app.data.OutboundMessageRecord
 import com.peerdone.app.core.transport.TransportAdapter
 import com.peerdone.app.core.transport.StubTransportAdapter
 import kotlinx.coroutines.launch
@@ -104,8 +106,10 @@ fun NetworkScreen(
     val topology by nearbyClient.topology.collectAsState()
     val rawPeerInfos by nearbyClient.connectedPeerInfos.collectAsState()
     val deliveryMetrics by nearbyClient.deliveryMetrics.collectAsState()
+    val outboundRecords by nearbyClient.outboundRecords.collectAsState()
     val peerInfos = remember(rawPeerInfos) { rawPeerInfos.distinctBy { it.userId } }
     var showDevicesSheet by remember { mutableStateOf(false) }
+    var showPacketsSheet by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -190,6 +194,49 @@ fun NetworkScreen(
         }
     }
 
+    if (showPacketsSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showPacketsSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = PeerDoneSurface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Text(
+                    text = "Последние 20 пакетов",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PeerDoneTextPrimary,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+                HorizontalDivider(color = PeerDoneGray.copy(alpha = 0.3f))
+                Spacer(modifier = Modifier.height(12.dp))
+                val packets = outboundRecords.take(20)
+                if (packets.isEmpty()) {
+                    Text(
+                        text = "Нет отправленных пакетов",
+                        fontSize = 14.sp,
+                        color = PeerDoneTextSecondary,
+                        modifier = Modifier.padding(vertical = 24.dp)
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 400.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(packets) { rec ->
+                            PacketItem(record = rec)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -266,7 +313,8 @@ fun NetworkScreen(
         NetworkStatCard(
             label = "Доставка",
             value = "Отпр: ${deliveryMetrics.sentCount} · Доставлено: ${deliveryMetrics.ackedCount} · Потери: ${deliveryMetrics.lossPercent}%",
-            valueColor = PeerDoneDarkGray
+            valueColor = PeerDoneDarkGray,
+            onClick = { showPacketsSheet = true }
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
@@ -502,6 +550,68 @@ fun NetworkScreen(
 
         Spacer(modifier = Modifier.height(100.dp))
     }
+}
+
+@Composable
+private fun PacketItem(record: OutboundMessageRecord) {
+    val stateColor = when (record.state) {
+        DeliveryState.QUEUED -> PeerDoneGray
+        DeliveryState.SENT -> PeerDoneBlue
+        DeliveryState.ACKED -> PeerDoneOnline
+        DeliveryState.FAILED -> PeerDoneStopButton
+    }
+    val stateText = when (record.state) {
+        DeliveryState.QUEUED -> "В очереди"
+        DeliveryState.SENT -> "Отправлен"
+        DeliveryState.ACKED -> "Доставлен"
+        DeliveryState.FAILED -> "Потерян"
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = PeerDoneInputFieldSolid
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = record.preview.take(40).let { if (record.preview.length > 40) "$it…" else it },
+                    fontSize = 14.sp,
+                    color = PeerDoneTextPrimary,
+                    maxLines = 2
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "ID: ${record.id.take(12)}… · ${record.updatedAtMs.toTimeString()}",
+                    fontSize = 11.sp,
+                    color = PeerDoneTextSecondary
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = stateText,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = stateColor
+                )
+                if (record.retries > 0) {
+                    Text(
+                        text = "Повторов: ${record.retries}",
+                        fontSize = 11.sp,
+                        color = PeerDoneGray
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun Long.toTimeString(): String {
+    val s = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+    return s.format(java.util.Date(this))
 }
 
 @Composable
