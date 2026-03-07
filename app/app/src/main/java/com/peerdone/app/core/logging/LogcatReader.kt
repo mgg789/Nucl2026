@@ -32,9 +32,9 @@ class LogcatReader(private val scope: CoroutineScope) {
                     .redirectErrorStream(true)
                     .start()
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
-                var line: String? = null
-                while (scope.isActive && reader.readLine().also { line = it } != null) {
-                    line?.let { parseAndEmit(it) }
+                while (scope.isActive) {
+                    val line = reader.readLine() ?: break
+                    parseAndEmit(line)
                 }
             } catch (e: Exception) {
                 AppLogger.e("LogcatReader", "Failed to read logcat", e)
