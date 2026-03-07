@@ -122,6 +122,8 @@ class NearbyMeshClient(
     private val peerNamesByEndpoint = ConcurrentHashMap<String, String>()
     private val seenMessageIds = Collections.synchronizedSet(linkedSetOf<String>())
     private val pendingAcks = ConcurrentHashMap<String, PendingAck>()
+    /** Откуда получен CHAT (для пересылки ACK по пути назад). msgId -> endpointId. */
+    private val envelopeIdToReceivedFrom = ConcurrentHashMap<String, String>()
     private val knownNodes = Collections.synchronizedSet(linkedSetOf<String>())
     private val knownEdges = Collections.synchronizedSet(linkedSetOf<TopologyEdge>())
     
@@ -236,6 +238,13 @@ class NearbyMeshClient(
                 val toRemove = seenMessageIds.take(1000)
                 seenMessageIds.removeAll(toRemove.toSet())
             }
+        }
+    }
+
+    private fun trimEnvelopeIdToReceivedFrom() {
+        if (envelopeIdToReceivedFrom.size > maxSeenMessageIds) {
+            val keys = envelopeIdToReceivedFrom.keys.take(1000)
+            keys.forEach { envelopeIdToReceivedFrom.remove(it) }
         }
     }
 
@@ -376,6 +385,15 @@ class NearbyMeshClient(
                     syncStats()
                     syncDeliveryMetrics()
                     log("ACK for ${ackFor.take(8)} from ${envelope.senderUserId}")
+                } else {
+                    // Мы не отправители — переслать ACK назад по mesh (A->B->C: C шлёт ACK B, B — A)
+                    envelopeIdToReceivedFrom.remove(ackFor)?.let { originalSender ->
+                        if (originalSender in connected) {
+                            sendToTargets(listOf(originalSender), envelope)
+                            log("ACK fwd ${ackFor.take(8)} -> $originalSender")
+                        }
+                        trimEnvelopeIdToReceivedFrom()
+                    }
                 }
             }
 
@@ -385,6 +403,7 @@ class NearbyMeshClient(
                     syncStats()
                     return
                 }
+                envelopeIdToReceivedFrom[envelope.id] = fromEndpointId
                 trimSeenMessageIds()
                 syncStats()
 
