@@ -66,6 +66,7 @@ import com.peerdone.app.core.transport.TransportRegistry
 import com.peerdone.app.core.transport.TransportType
 import com.peerdone.app.data.PreferencesStore
 import com.peerdone.app.data.RouterTransportAdapter
+import com.peerdone.app.data.DeliveryState
 import com.peerdone.app.data.StoredChatMessage
 import com.peerdone.app.data.StoredMessageType
 import com.peerdone.app.di.LocalDeviceIdentity
@@ -78,8 +79,10 @@ import com.peerdone.app.ui.theme.PeerDoneGray
 import com.peerdone.app.ui.theme.PeerDoneLightGray
 import com.peerdone.app.ui.theme.PeerDonePrimary
 import com.peerdone.app.ui.theme.PeerDonePrimaryVariant
+import com.peerdone.app.ui.theme.PeerDoneOnline
 import com.peerdone.app.ui.theme.PeerDoneReceivedBubble
 import com.peerdone.app.ui.theme.PeerDoneSentBubble
+import com.peerdone.app.ui.theme.PeerDoneStopButton
 import com.peerdone.app.ui.theme.PeerDoneTextDark
 import com.peerdone.app.ui.theme.PeerDoneWhite
 import kotlinx.coroutines.delay
@@ -107,7 +110,8 @@ private data class ChatMessage(
     val voiceDurationMs: Long = 0,
     val voiceFile: File? = null,
     val fileName: String? = null,
-    val filePath: String? = null
+    val filePath: String? = null,
+    val deliveryStatus: DeliveryState? = null,
 )
 
 @OptIn(ExperimentalEncodingApi::class)
@@ -146,6 +150,10 @@ fun ChatScreen(
     }
 
     val incoming by nearbyClient.incomingMessages.collectAsState()
+    val outboundRecords by nearbyClient.outboundRecords.collectAsState()
+    val deliveryStatusByMsgId = remember(outboundRecords) {
+        outboundRecords.associate { it.id to it.state }
+    }
     val storedMessages by nearbyClient.chatHistoryStore.getMessagesForPeerFlow(peerId)
         .collectAsState(initial = remember(peerId) { nearbyClient.chatHistoryStore.getMessagesForPeerSync(peerId) })
     val localMessages = remember { mutableStateListOf<ChatMessage>() }
@@ -246,7 +254,7 @@ fun ChatScreen(
             }
     }
 
-    val storedAsChat = remember(storedMessages) {
+    val storedAsChat = remember(storedMessages, deliveryStatusByMsgId) {
         storedMessages.map { s ->
             ChatMessage(
                 id = s.id,
@@ -263,6 +271,7 @@ fun ChatScreen(
                 voiceFile = s.filePath?.takeIf { s.type == StoredMessageType.VOICE }?.let { File(it) },
                 fileName = s.fileName,
                 filePath = s.filePath,
+                deliveryStatus = if (s.isOutgoing) deliveryStatusByMsgId[s.id] else null,
             )
         }
     }
@@ -320,13 +329,17 @@ fun ChatScreen(
             }
 
             items(allMessages) { message ->
-                when (message.type) {
-                    ChatMessageType.VOICE -> VoiceMessageBubble(
-                        durationMs = message.voiceDurationMs,
-                        timestamp = message.timestampMs.toTimeString(),
-                        isOutgoing = message.isOutgoing,
-                        isPlaying = playingFileId == message.voiceFileId && playbackState == PlaybackState.PLAYING,
-                        onPlayPause = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = if (message.isOutgoing) Alignment.End else Alignment.Start
+                ) {
+                    when (message.type) {
+                        ChatMessageType.VOICE -> VoiceMessageBubble(
+                            durationMs = message.voiceDurationMs,
+                            timestamp = message.timestampMs.toTimeString(),
+                            isOutgoing = message.isOutgoing,
+                            isPlaying = playingFileId == message.voiceFileId && playbackState == PlaybackState.PLAYING,
+                            onPlayPause = {
                             val file = message.voiceFile ?: message.filePath?.let { File(it) }
                             if (file != null) {
                                 if (playingFileId == message.voiceFileId && playbackState == PlaybackState.PLAYING) {
@@ -337,28 +350,36 @@ fun ChatScreen(
                             }
                         }
                     )
-                    ChatMessageType.FILE -> FileMessageBubble(
-                        fileName = message.fileName ?: message.text,
-                        timestamp = message.timestampMs.toTimeString(),
-                        isOutgoing = message.isOutgoing,
-                        filePath = message.filePath,
-                        onOpenFile = { path ->
-                            path?.let { openFileWithExternalApp(context, it, message.fileName) }
-                        }
-                    )
-                    ChatMessageType.VIDEO_NOTE -> VideoNoteBubble(
-                        timestamp = message.timestampMs.toTimeString(),
-                        isOutgoing = message.isOutgoing,
-                        filePath = message.filePath,
-                        onPlay = { path ->
-                            path?.let { openFileWithExternalApp(context, it, message.fileName) }
-                        }
-                    )
-                    else -> MessageBubble(
-                        message = message.text,
-                        timestamp = message.timestampMs.toTimeString(),
-                        isOutgoing = message.isOutgoing
-                    )
+                        ChatMessageType.FILE -> FileMessageBubble(
+                            fileName = message.fileName ?: message.text,
+                            timestamp = message.timestampMs.toTimeString(),
+                            isOutgoing = message.isOutgoing,
+                            filePath = message.filePath,
+                            onOpenFile = { path ->
+                                path?.let { openFileWithExternalApp(context, it, message.fileName) }
+                            }
+                        )
+                        ChatMessageType.VIDEO_NOTE -> VideoNoteBubble(
+                            timestamp = message.timestampMs.toTimeString(),
+                            isOutgoing = message.isOutgoing,
+                            filePath = message.filePath,
+                            onPlay = { path ->
+                                path?.let { openFileWithExternalApp(context, it, message.fileName) }
+                            }
+                        )
+                        else -> MessageBubble(
+                            message = message.text,
+                            timestamp = message.timestampMs.toTimeString(),
+                            isOutgoing = message.isOutgoing
+                        )
+                    }
+                    if (message.isOutgoing && message.deliveryStatus != null) {
+                        DeliveryStatusRow(
+                            timestamp = message.timestampMs.toTimeString(),
+                            status = message.deliveryStatus,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
                 }
             }
         }
@@ -542,6 +563,42 @@ private fun ChatHeader(
 }
 
 @Composable
+private fun DeliveryStatusRow(
+    timestamp: String,
+    status: DeliveryState,
+    modifier: Modifier = Modifier
+) {
+    val (statusText, statusColor) = when (status) {
+        DeliveryState.QUEUED -> "В очереди" to PeerDoneGray
+        DeliveryState.SENT -> "Отправлено" to PeerDonePrimary
+        DeliveryState.ACKED -> "Доставлено" to PeerDoneOnline
+        DeliveryState.FAILED -> "Потеряно" to PeerDoneStopButton
+    }
+    Row(
+        modifier = modifier.padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(
+            painter = painterResource(id = R.drawable.ic_check),
+            contentDescription = null,
+            modifier = Modifier.size(12.dp),
+            tint = statusColor
+        )
+        Text(
+            text = statusText,
+            fontSize = 11.sp,
+            color = statusColor
+        )
+        Text(
+            text = timestamp,
+            fontSize = 11.sp,
+            color = PeerDoneGray
+        )
+    }
+}
+
+@Composable
 private fun MessageBubble(
     message: String,
     timestamp: String,
@@ -629,14 +686,6 @@ private fun FileMessageBubble(
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Medium
                 )
-                if (isOutgoing) {
-                    Text(
-                        text = "Отправлен",
-                        fontSize = 12.sp,
-                        color = PeerDoneGray,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
                 if (filePath != null) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Surface(
